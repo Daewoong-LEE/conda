@@ -122,9 +122,9 @@ def rmtree(path, *args, **kwargs):
                         ],
                         stderr=STDOUT,
                     )
-                except CalledProcessError:
+                except CalledProcessError as e:
                     log.debug(
-                        f"removing dir contents the fast way failed.  Output was: {out}"
+                        f"removing dir contents the fast way failed.  Output was: {e.output}"
                     )
 
             shutil.rmtree(".empty")
