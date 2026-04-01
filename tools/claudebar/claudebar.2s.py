@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # <xbar.title>ClaudeBar</xbar.title>
-# <xbar.version>1.1.0</xbar.version>
+# <xbar.version>1.2.0</xbar.version>
 # <xbar.desc>Real-time Claude Code token usage monitor</xbar.desc>
 # <xbar.refreshOnOpen>true</xbar.refreshOnOpen>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
@@ -9,7 +9,7 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 
-import json, os
+import json, os, re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -41,6 +41,103 @@ def _fmt(n):
     if n >= 1_000_000: return f"{n/1_000_000:.2f}M"
     if n >= 1_000:     return f"{n/1_000:.1f}k"
     return str(n)
+
+# ── claude.ai usage fetch (via browser cookies) ───────────────────────────────
+def _fetch_claude_ai_usage() -> float | None:
+    """
+    Try to fetch the actual usage percentage from claude.ai/settings/usage
+    using the user's browser session cookies.
+    Returns a float (0-100) or None if unavailable.
+    """
+    try:
+        import browser_cookie3
+        import urllib.request
+
+        # Try Chrome first, then Safari, then Firefox
+        cookies = None
+        for loader in [
+            lambda: browser_cookie3.chrome(domain_name=".claude.ai"),
+            lambda: browser_cookie3.safari(domain_name=".claude.ai"),
+            lambda: browser_cookie3.firefox(domain_name=".claude.ai"),
+        ]:
+            try:
+                jar = loader()
+                # Check if we got any cookies
+                if jar:
+                    cookies = jar
+                    break
+            except Exception:
+                continue
+
+        if not cookies:
+            return None
+
+        # Build a cookie header string
+        import http.cookiejar
+        cookie_header = "; ".join(
+            f"{c.name}={c.value}"
+            for c in cookies
+            if "claude.ai" in (c.domain or "")
+        )
+        if not cookie_header:
+            return None
+
+        req = urllib.request.Request(
+            "https://claude.ai/settings/usage",
+            headers={
+                "Cookie": cookie_header,
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+
+        # Extract __NEXT_DATA__ JSON embedded in the page
+        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if not m:
+            return None
+
+        data = json.loads(m.group(1))
+
+        # Navigate to usage info — path may vary; try common locations
+        def _find_usage(obj, depth=0):
+            if depth > 10: return None
+            if isinstance(obj, dict):
+                # Look for keys like "usagePercent", "percentUsed", "usage_percent"
+                for key in obj:
+                    lkey = key.lower()
+                    if "percent" in lkey or "usage" in lkey:
+                        val = obj[key]
+                        if isinstance(val, (int, float)) and 0 <= val <= 100:
+                            return float(val)
+                        if isinstance(val, str):
+                            try:
+                                f = float(val.strip("%"))
+                                if 0 <= f <= 100:
+                                    return f
+                            except ValueError:
+                                pass
+                for val in obj.values():
+                    result = _find_usage(val, depth + 1)
+                    if result is not None:
+                        return result
+            elif isinstance(obj, list):
+                for item in obj:
+                    result = _find_usage(item, depth + 1)
+                    if result is not None:
+                        return result
+            return None
+
+        return _find_usage(data)
+
+    except ImportError:
+        # browser_cookie3 not installed — silently skip
+        return None
+    except Exception:
+        return None
 
 # ── File-change detection (mtime fingerprint) ─────────────────────────────────
 def _fingerprint() -> float:
@@ -174,6 +271,26 @@ else:
     d = _read_stats()
     _save_cache(d, current_mtime)       # persist for next run
 
+# ── Try claude.ai live usage (browser cookies) ────────────────────────────────
+# Run at most once per minute to avoid hammering the server
+_LIVE_CACHE   = Path.home() / ".claudebar_live.json"
+_live_pct     = None
+_live_synced  = False
+
+try:
+    now_ts = datetime.now().timestamp()
+    live_data = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
+    if now_ts - live_data.get("ts", 0) > 60:   # stale → refresh
+        fetched = _fetch_claude_ai_usage()
+        if fetched is not None:
+            live_data = {"ts": now_ts, "pct": fetched}
+            _LIVE_CACHE.write_text(json.dumps(live_data))
+    if live_data.get("pct") is not None:
+        _live_pct    = live_data["pct"]
+        _live_synced = True
+except Exception:
+    pass
+
 # ── Compute display values ────────────────────────────────────────────────────
 inp, out, cw, cr   = d["inp"], d["out"], d["cw"], d["cr"]
 cost               = d["cost"]
@@ -183,7 +300,13 @@ session_label      = d.get("session_label", "오늘")
 
 limit   = 150_000
 total   = inp + out
-pct     = round(total / limit * 100, 1)
+
+# Use claude.ai live pct if available, else compute from local JSONL
+if _live_pct is not None:
+    pct = _live_pct
+else:
+    pct = round(total / limit * 100, 1)
+
 pct_col = "#32d74b" if pct < 60 else ("#ff9f0a" if pct < 85 else "#ff453a")
 
 h, m   = divmod(mins, 60)
@@ -195,13 +318,24 @@ bar_str = "█" * filled + "░" * (20 - filled)
 # ── SwiftBar / xbar output ────────────────────────────────────────────────────
 sep        = " · " if mins > 0 else ""
 mins_label = f"{mins}m" if mins > 0 else ""
-print(f"☁ {pct}%{sep}{mins_label} | color={pct_col} size=13")
+sync_tag   = " ✓" if _live_synced else ""
+print(f"☁ {pct:.1f}%{sep}{mins_label} | color={pct_col} size=13")
 print("---")
 print(f"☁  Claude Code | size=15 color=white bold=true sfimage=cloud.fill")
 print("---")
-print(f"Token Usage  ({session_label}) | size=12 color=white bold=true")
-print(f"{bar_str}  {pct}% | size=12 font=Menlo color={pct_col}")
-print(f"{_fmt(total)} / {_fmt(limit)} | size=11 color=#aaaaaa")
+
+if _live_synced:
+    print(f"Token Usage  (claude.ai 동기화{sync_tag}) | size=12 color=white bold=true")
+else:
+    print(f"Token Usage  ({session_label}) | size=12 color=white bold=true")
+
+print(f"{bar_str}  {pct:.1f}% | size=12 font=Menlo color={pct_col}")
+
+if _live_synced:
+    print(f"claude.ai 기준 실시간 사용량 | size=11 color=#aaaaaa")
+else:
+    print(f"{_fmt(total)} / {_fmt(limit)} | size=11 color=#aaaaaa")
+
 print("---")
 print(f"Session Time Remaining | size=12 color=white bold=true")
 print(f"{time_s}  of 5h window | size=18 color=white bold=true")
@@ -219,5 +353,13 @@ if by_model:
                     .replace("-20250219","").replace("-20240229","")
                     .replace("-20240307",""))
         print(f"  {short:<26} {_fmt(v[0]+v[1]):>7}   ${v[4]:.3f} | size=12 font=Menlo color=white")
+    print("---")
+
+if _live_synced:
+    print("🔗 claude.ai에서 동기화됨 | size=11 color=#32d74b")
+    print("---")
+else:
+    print("⚠️ 로컬 데이터 (browser-cookie3 설치 시 동기화) | size=11 color=#ff9f0a")
+    print("browser-cookie3 설치: pip3 install browser-cookie3 | size=11 color=#4a9eff bash=/bin/sh param1=-c param2=\"pip3 install browser-cookie3\" terminal=true refresh=true")
     print("---")
 print("새로고침 | refresh=true color=#4a9eff")
