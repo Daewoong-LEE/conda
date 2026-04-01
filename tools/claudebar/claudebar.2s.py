@@ -43,7 +43,7 @@ def _fmt(n):
     return str(n)
 
 # ── claude.ai usage fetch (via browser cookies) ───────────────────────────────
-def _fetch_claude_ai_usage() -> float | None:
+def _fetch_claude_ai_usage():
     """
     Try to fetch the actual usage percentage from claude.ai/settings/usage
     using the user's browser session cookies.
@@ -153,7 +153,7 @@ def _fingerprint() -> float:
                 pass
     return latest
 
-def _load_cache() -> dict | None:
+def _load_cache():
     try:
         raw = CACHE_FILE.read_text()
         c   = json.loads(raw)
@@ -176,13 +176,13 @@ def _save_cache(data: dict, mtime: float) -> None:
         pass
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
-def _parse_ts(s: str) -> datetime | None:
+def _parse_ts(s):
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
 
-def _read_all_entries() -> list[tuple[datetime, dict]]:
+def _read_all_entries():
     """Return all assistant entries as (timestamp, entry) sorted by time."""
     entries = []
     if not PROJECTS.is_dir():
