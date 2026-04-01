@@ -1,467 +1,374 @@
 #!/usr/bin/env python3
 """
-ClaudeBar — macOS status bar app for real-time Claude token monitoring.
+ClaudeBar — macOS status bar app (NSPopover + WKWebView)
 
-Install deps (macOS only):
-    pip install pyobjc
-
-Run:
-    python3 claudebar_app.py
+Install:  pip install pyobjc
+Run:      python3 claudebar_app.py
 """
 import sys, json, threading, time
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-# ── PyObjC check ─────────────────────────────────────────────────────────────
 try:
-    import AppKit
-    import WebKit
-    import objc
-    from Foundation import (
-        NSObject, NSMakeRect, NSMakeSize, NSBundle,
-        NSOperationQueue, NSTimer, NSRunLoop, NSDefaultRunLoopMode,
-    )
+    import AppKit, WebKit, objc
+    from Foundation import (NSObject, NSMakeRect, NSMakeSize,
+                             NSOperationQueue)
 except ImportError:
-    print("PyObjC가 필요합니다:\n  pip install pyobjc\n  python3 claudebar_app.py")
+    print("PyObjC 필요:  pip install pyobjc")
     sys.exit(1)
 
-# ── Pricing (per 1M tokens, USD) ─────────────────────────────────────────────
+# ── Pricing (per 1M tokens) ───────────────────────────────────────────────────
 _PRICING = {
-    "claude-opus-4-6":            dict(inp=15.00, out=75.00, cw=18.75, cr=1.50),
-    "claude-sonnet-4-6":          dict(inp= 3.00, out=15.00, cw= 3.75, cr=0.30),
-    "claude-3-7-sonnet-20250219": dict(inp= 3.00, out=15.00, cw= 3.75, cr=0.30),
-    "claude-3-5-sonnet-20241022": dict(inp= 3.00, out=15.00, cw= 3.75, cr=0.30),
-    "claude-haiku-4-5":           dict(inp= 0.80, out= 4.00, cw= 1.00, cr=0.08),
-    "claude-haiku-4-5-20251001":  dict(inp= 0.80, out= 4.00, cw= 1.00, cr=0.08),
-    "claude-3-5-haiku-20241022":  dict(inp= 0.80, out= 4.00, cw= 1.00, cr=0.08),
-    "claude-3-opus-20240229":     dict(inp=15.00, out=75.00, cw=18.75, cr=1.50),
-    "claude-3-haiku-20240307":    dict(inp= 0.25, out= 1.25, cw= 0.30, cr=0.03),
+    "claude-opus-4-6":            (15.00, 75.00, 18.75, 1.50),
+    "claude-sonnet-4-6":          ( 3.00, 15.00,  3.75, 0.30),
+    "claude-3-7-sonnet-20250219": ( 3.00, 15.00,  3.75, 0.30),
+    "claude-3-5-sonnet-20241022": ( 3.00, 15.00,  3.75, 0.30),
+    "claude-haiku-4-5":           ( 0.80,  4.00,  1.00, 0.08),
+    "claude-haiku-4-5-20251001":  ( 0.80,  4.00,  1.00, 0.08),
+    "claude-3-5-haiku-20241022":  ( 0.80,  4.00,  1.00, 0.08),
+    "claude-3-opus-20240229":     (15.00, 75.00, 18.75, 1.50),
+    "claude-3-haiku-20240307":    ( 0.25,  1.25,  0.30, 0.03),
 }
-_DEFAULT_PRICE = dict(inp=3.00, out=15.00, cw=3.75, cr=0.30)
+_DP = (3.00, 15.00, 3.75, 0.30)
 
-def _price(model):
-    if model in _PRICING: return _PRICING[model]
+def _price(m):
+    if m in _PRICING: return _PRICING[m]
     for k, p in _PRICING.items():
-        if k in model: return p
-    return _DEFAULT_PRICE
+        if k in m: return p
+    return _DP
 
-def _fmt(n):
-    if n >= 1_000_000: return f"{n/1_000_000:.2f}M"
+def _fmt(n):        # compact  2.4k / 23.2M
+    if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
     if n >= 1_000:     return f"{n/1_000:.1f}k"
     return str(n)
 
-# ── JSONL reader ──────────────────────────────────────────────────────────────
-def read_stats() -> dict:
-    projects = Path.home() / ".claude" / "projects"
-    today_utc = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    inp = out = cw = cr = 0
-    cost = 0.0
-    by_model: dict = {}
-    first_ts = None
+def _fmt_exact(n):  # 51,881
+    return f"{n:,}"
 
-    if projects.is_dir():
-        iso = [
-            datetime.fromisoformat,
-            lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")),
-        ]
-        for f in projects.rglob("*.jsonl"):
-            try:
-                lines = f.read_text(errors="ignore").splitlines()
-            except OSError:
-                continue
-            for line in lines:
-                if not line.strip(): continue
-                try:
-                    e = json.loads(line)
-                except Exception:
-                    continue
-                if e.get("type") != "assistant": continue
-                ts_str = e.get("timestamp", "")
-                ts = None
-                for parser in iso:
-                    try: ts = parser(ts_str); break
-                    except Exception: pass
-                if ts is None or ts < today_utc:
-                    continue
-                if first_ts is None or ts < first_ts:
-                    first_ts = ts
-                msg   = e.get("message") or {}
-                usage = msg.get("usage") or {}
-                model = msg.get("model", "unknown")
-                i  = usage.get("input_tokens", 0)
-                o  = usage.get("output_tokens", 0)
-                cc = usage.get("cache_creation_input_tokens", 0)
-                rc = usage.get("cache_read_input_tokens", 0)
-                if i == 0 and o == 0: continue
-                p = _price(model)
-                c = (i*p["inp"] + o*p["out"] + cc*p["cw"] + rc*p["cr"]) / 1_000_000
-                inp += i; out += o; cw += cc; cr += rc; cost += c
-                bm = by_model.setdefault(model, dict(i=0,o=0,cw=0,cr=0,cost=0.0))
-                bm["i"]+=i; bm["o"]+=o; bm["cw"]+=cc; bm["cr"]+=rc; bm["cost"]+=c
+# ── JSONL reader ──────────────────────────────────────────────────────────────
+_PROJECTS = Path.home() / ".claude" / "projects"
+
+def _parse_ts(s):
+    try: return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except: return None
+
+def _all_entries():
+    entries = []
+    if not _PROJECTS.is_dir(): return entries
+    for f in _PROJECTS.rglob("*.jsonl"):
+        try: lines = f.read_text(errors="ignore").splitlines()
+        except: continue
+        for line in lines:
+            if not line.strip(): continue
+            try: e = json.loads(line)
+            except: continue
+            if e.get("type") != "assistant": continue
+            ts = _parse_ts(e.get("timestamp", ""))
+            if not ts: continue
+            msg = e.get("message") or {}
+            u   = msg.get("usage") or {}
+            if u.get("input_tokens",0) == 0 and u.get("output_tokens",0) == 0: continue
+            entries.append((ts, e))
+    entries.sort(key=lambda x: x[0])
+    return entries
+
+def _aggregate(entries, cutoff):
+    inp = out = cw = cr = 0; cost = 0.0
+    by_model = {}; first_ts = None
+    for ts, e in entries:
+        if ts < cutoff: continue
+        if first_ts is None: first_ts = ts
+        msg = e.get("message") or {}
+        u   = msg.get("usage") or {}
+        mdl = msg.get("model", "unknown")
+        i, o, cc, rc = (u.get("input_tokens",0), u.get("output_tokens",0),
+                        u.get("cache_creation_input_tokens",0),
+                        u.get("cache_read_input_tokens",0))
+        p = _price(mdl)
+        c = (i*p[0]+o*p[1]+cc*p[2]+rc*p[3]) / 1_000_000
+        inp+=i; out+=o; cw+=cc; cr+=rc; cost+=c
+        bm = by_model.setdefault(mdl, [0,0,0,0,0.0])
+        bm[0]+=i; bm[1]+=o; bm[2]+=cc; bm[3]+=rc; bm[4]+=c
+    return dict(inp=inp, out=out, cw=cw, cr=cr, cost=cost,
+                by_model=by_model, first_ts=first_ts)
+
+def read_stats():
+    now     = datetime.now(timezone.utc)
+    entries = _all_entries()
+
+    # 1) 오늘 데이터 우선
+    today_cut = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    d = _aggregate(entries, today_cut)
+
+    # 2) 오늘 데이터 없으면 → 가장 최근 5h 윈도우
+    if d["inp"] + d["out"] == 0 and entries:
+        last_ts = entries[-1][0]
+        d = _aggregate(entries, last_ts - timedelta(hours=5))
+
+    # 세션 잔여 시간
+    mins = 0
+    if d["first_ts"]:
+        mins = max(0, int((5*3600 - (now - d["first_ts"]).total_seconds()) / 60))
 
     limit = 150_000
-    total = inp + out
+    total = d["inp"] + d["out"]
     pct   = round(total / limit * 100, 1)
-
-    mins_remaining = 0
-    if first_ts:
-        elapsed   = (datetime.now(timezone.utc) - first_ts).total_seconds()
-        remaining = max(0.0, 5 * 3600 - elapsed)
-        mins_remaining = int(remaining / 60)
-
-    h, m = divmod(mins_remaining, 60)
+    h, m  = divmod(mins, 60)
     time_str = f"{h}h {m}m" if h > 0 else (f"{m}m" if m > 0 else "—")
 
     models_rows = ""
-    for mdl, v in sorted(by_model.items(), key=lambda x: -(x[1]["i"]+x[1]["o"])):
-        short = mdl.replace("claude-","").replace("-20251001","").replace("-20241022","").replace("-20250219","")
-        tot = v["i"] + v["o"]
+    for mdl, v in sorted(d["by_model"].items(), key=lambda x: -(x[1][0]+x[1][1])):
+        short = (mdl.replace("claude-","")
+                    .replace("-20251001","").replace("-20241022","")
+                    .replace("-20250219","").replace("-20240229",""))
         models_rows += (
             f'<div class="model-row">'
             f'<span class="model-name">{short}</span>'
-            f'<span class="model-tok">{_fmt(tot)}</span>'
-            f'<span class="model-cost">${v["cost"]:.3f}</span>'
+            f'<span class="model-tok">{_fmt(v[0]+v[1])}</span>'
+            f'<span class="model-cost">${v[4]:.3f}</span>'
             f'</div>'
         )
 
     return dict(
-        pct=pct, total=_fmt(total), limit=_fmt(limit),
-        inp=_fmt(inp), out=_fmt(out), cache=_fmt(cw+cr),
-        cost=f"${cost:.3f}", time=time_str, mins=mins_remaining,
+        pct=pct,
+        total_exact=_fmt_exact(total),
+        limit_exact=_fmt_exact(limit),
+        inp=_fmt(d["inp"]), out=_fmt(d["out"]), cache=_fmt(d["cw"]+d["cr"]),
+        cost=f"${d['cost']:.3f}",
+        time=time_str, mins=mins,
         models_rows=models_rows,
     )
 
-# ── Embedded HTML/CSS ─────────────────────────────────────────────────────────
-def _build_html(d: dict) -> str:
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
+# ── HTML ──────────────────────────────────────────────────────────────────────
+def _build_html(d):
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  html, body {{
-    width: 340px;
-    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
-    background: linear-gradient(160deg, #3a8fd4 0%, #2d7bbf 45%, #2670b0 100%);
-    color: #fff;
-    user-select: none;
-    -webkit-user-select: none;
-    overflow: hidden;
-  }}
-  .divider {{ height: 1px; background: rgba(255,255,255,0.22); }}
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{
+  width:340px;
+  font-family:-apple-system,"SF Pro Display","Helvetica Neue",sans-serif;
+  background:linear-gradient(170deg,#3d90d8 0%,#2f7dc4 40%,#2570b5 100%);
+  color:#fff;user-select:none;-webkit-user-select:none;overflow:hidden;
+}}
+.divider{{height:1px;background:rgba(255,255,255,.2)}}
 
-  /* Header */
-  .header {{
-    display: flex; align-items: center; gap: 10px;
-    padding: 14px 16px;
-  }}
-  .hdr-icon  {{ font-size: 20px; }}
-  .hdr-title {{ font-size: 17px; font-weight: 700; flex: 1; }}
-  .badge {{
-    font-size: 12px; font-weight: 500;
-    background: rgba(255,255,255,0.16);
-    border: 1px solid rgba(255,255,255,0.22);
-    padding: 3px 10px; border-radius: 8px;
-  }}
+/* Header */
+.header{{display:flex;align-items:center;gap:10px;padding:15px 16px}}
+.hdr-icon{{font-size:22px}}
+.hdr-title{{font-size:18px;font-weight:700;flex:1}}
+.badge{{
+  font-size:13px;font-weight:500;color:rgba(255,255,255,.9);
+  background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);
+  padding:4px 12px;border-radius:9px
+}}
 
-  /* Main */
-  .main {{ padding: 16px; display: flex; flex-direction: column; gap: 14px; }}
-  .row   {{ display: flex; justify-content: space-between; align-items: baseline; }}
-  .label {{ font-size: 13px; font-weight: 600; }}
-  .nums  {{ font-size: 13px; color: rgba(255,255,255,0.72); }}
+/* Main */
+.main{{padding:18px 16px;display:flex;flex-direction:column;gap:16px}}
+.row{{display:flex;justify-content:space-between;align-items:baseline}}
+.label{{font-size:14px;font-weight:600;color:rgba(255,255,255,.9)}}
+.nums{{font-size:14px;color:rgba(255,255,255,.75)}}
 
-  /* Progress */
-  .track {{
-    height: 8px; background: rgba(255,255,255,0.20);
-    border-radius: 999px; overflow: hidden; margin-top: 8px;
-  }}
-  .fill {{
-    height: 100%; border-radius: 999px;
-    background: #32d74b;
-    transition: width .5s cubic-bezier(.4,0,.2,1);
-  }}
+/* Progress bar */
+.track{{height:10px;background:rgba(255,255,255,.2);border-radius:999px;overflow:hidden;margin-top:10px}}
+.fill{{height:100%;border-radius:999px;background:#32d74b;transition:width .5s cubic-bezier(.4,0,.2,1)}}
 
-  /* Big text */
-  .big-pct  {{ font-size: 33px; font-weight: 800; letter-spacing: -1px; line-height: 1; margin-top: 8px; }}
-  .big-time {{ font-size: 24px; font-weight: 700; letter-spacing: -.5px; }}
-  .window   {{ font-size: 13px; color: rgba(255,255,255,.65); margin-left: 6px; }}
+/* Big % */
+.big-pct{{font-size:38px;font-weight:800;letter-spacing:-1.5px;line-height:1;margin-top:10px;color:#32d74b}}
 
-  /* Columns */
-  .cols {{ display: flex; }}
-  .col  {{ flex: 1; }}
-  .col-title {{ font-size: 13px; font-weight: 600; margin-bottom: 4px; }}
-  .col-val   {{
-    font-size: 16px; font-weight: 600;
-    font-family: "SF Mono", Menlo, monospace;
-    font-variant-numeric: tabular-nums;
-  }}
-  .cyan  {{ color: #5ac8fa; }}
-  .pink  {{ color: #ff6ec7; }}
-  .green {{ color: #32d74b; }}
+/* Session time */
+.time-row{{display:flex;align-items:baseline;gap:8px}}
+.big-time{{font-size:28px;font-weight:700;letter-spacing:-.5px}}
+.window{{font-size:15px;color:rgba(255,255,255,.6)}}
 
-  /* Models */
-  .models-section {{ font-size: 12px; }}
-  .models-hdr {{ font-size: 11px; font-weight: 600; opacity: .6; margin-bottom: 5px; letter-spacing: .5px; text-transform: uppercase; }}
-  .model-row  {{ display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }}
-  .model-name {{ flex: 1; color: rgba(255,255,255,.8); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-  .model-tok  {{ color: rgba(255,255,255,.6); font-family: "SF Mono", monospace; font-size: 11px; }}
-  .model-cost {{ color: #32d74b; font-family: "SF Mono", monospace; font-size: 11px; }}
+/* Three columns */
+.cols{{display:flex}}
+.col{{flex:1}}
+.col-title{{font-size:14px;font-weight:600;margin-bottom:6px}}
+.col-val{{font-size:18px;font-weight:600;font-family:"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}}
+.cyan{{color:#5ac8fa}}.pink{{color:#ff6ec7}}.green{{color:#32d74b}}
 
-  /* Footer */
-  .footer {{
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 11px 16px;
-  }}
-  button {{
-    background: none; border: none; cursor: pointer;
-    font-family: inherit; font-size: 14px; font-weight: 500;
-    padding: 4px 8px; border-radius: 6px;
-    transition: background .12s;
-  }}
-  .btn-refresh {{ color: #4a9eff; }}
-  .btn-refresh:hover {{ background: rgba(74,158,255,.15); }}
-  .btn-quit    {{ color: rgba(255,255,255,.85); }}
-  .btn-quit:hover {{ background: rgba(255,255,255,.1); }}
-  .spin {{ display: inline-block; animation: spin 1s linear infinite; }}
-  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-</style>
-</head>
-<body>
+/* Models */
+.models-hdr{{font-size:11px;font-weight:600;opacity:.55;letter-spacing:.5px;text-transform:uppercase;margin-bottom:5px}}
+.model-row{{display:flex;gap:6px;margin-bottom:3px}}
+.model-name{{flex:1;color:rgba(255,255,255,.8);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.model-tok{{color:rgba(255,255,255,.55);font-family:"SF Mono",monospace;font-size:11px}}
+.model-cost{{color:#32d74b;font-family:"SF Mono",monospace;font-size:11px}}
 
-<!-- Header -->
+/* Footer */
+.footer{{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}}
+button{{background:none;border:none;cursor:pointer;font-family:inherit;font-size:15px;font-weight:500;padding:4px 8px;border-radius:7px;transition:background .12s}}
+.btn-r{{color:#4a9eff}}.btn-r:hover{{background:rgba(74,158,255,.15)}}
+.btn-q{{color:rgba(255,255,255,.85)}}.btn-q:hover{{background:rgba(255,255,255,.1)}}
+.spin{{display:inline-block;animation:spin 1s linear infinite}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+</style></head><body>
+
 <div class="header">
   <span class="hdr-icon">☁️</span>
   <span class="hdr-title">Claude Code</span>
   <span class="badge">Max 5x</span>
 </div>
-
 <div class="divider"></div>
-
-<!-- Main -->
 <div class="main">
 
-  <!-- Token usage -->
   <div>
     <div class="row">
       <span class="label">Token Usage</span>
-      <span class="nums" id="usageNums">{d['total']} / {d['limit']}</span>
+      <span class="nums" id="nums">{d['total_exact']} / {d['limit_exact']}</span>
     </div>
     <div class="track"><div class="fill" id="fill" style="width:{d['pct']}%"></div></div>
-    <div class="big-pct green" id="bigPct">{d['pct']}% used</div>
+    <div class="big-pct" id="bigPct" style="color:{('#32d74b' if d['pct']<60 else '#ff9f0a' if d['pct']<85 else '#ff453a')}">{d['pct']}% used</div>
   </div>
 
-  <!-- Session time -->
   <div>
-    <div class="label" style="margin-bottom:5px">Session Time Remaining</div>
-    <span class="big-time" id="bigTime">{d['time']}</span>
-    <span class="window">of 5h window</span>
+    <div class="label" style="margin-bottom:8px">Session Time Remaining</div>
+    <div class="time-row">
+      <span class="big-time" id="bigTime">{d['time']}</span>
+      <span class="window">of 5h window</span>
+    </div>
   </div>
 
-  <!-- Three columns -->
   <div class="cols">
-    <div class="col">
-      <div class="col-title">Input</div>
-      <div class="col-val cyan"  id="colInp">{d['inp']}</div>
-    </div>
-    <div class="col">
-      <div class="col-title">Output</div>
-      <div class="col-val pink"  id="colOut">{d['out']}</div>
-    </div>
-    <div class="col">
-      <div class="col-title">Cache</div>
-      <div class="col-val green" id="colCache">{d['cache']}</div>
-    </div>
+    <div class="col"><div class="col-title">Input</div><div class="col-val cyan"  id="colI">{d['inp']}</div></div>
+    <div class="col"><div class="col-title">Output</div><div class="col-val pink" id="colO">{d['out']}</div></div>
+    <div class="col"><div class="col-title">Cache</div><div class="col-val green" id="colC">{d['cache']}</div></div>
   </div>
 
-  <!-- Model breakdown -->
-  {'<div class="models-section"><div class="models-hdr">모델별</div>' + d['models_rows'] + '</div>' if d['models_rows'] else ''}
+  {'<div><div class="models-hdr">모델별</div>' + d['models_rows'] + '</div>' if d['models_rows'] else ''}
 
-</div><!-- /main -->
-
+</div>
 <div class="divider"></div>
-
-<!-- Footer -->
 <div class="footer">
-  <button class="btn-refresh" id="refreshBtn" onclick="onRefresh()">Refresh</button>
-  <button class="btn-quit" onclick="onQuit()">Quit</button>
+  <button class="btn-r" id="btnR" onclick="onRefresh()">Refresh</button>
+  <button class="btn-q" onclick="onQuit()">Quit</button>
 </div>
 
 <script>
-function _pctColor(p) {{
-  return p < 60 ? '#32d74b' : p < 85 ? '#ff9f0a' : '#ff453a';
+function _col(p){{return p<60?'#32d74b':p<85?'#ff9f0a':'#ff453a'}}
+function updateData(d){{
+  const c=_col(d.pct);
+  document.getElementById('fill').style.width=d.pct+'%';
+  document.getElementById('fill').style.background=c;
+  document.getElementById('bigPct').textContent=d.pct+'% used';
+  document.getElementById('bigPct').style.color=c;
+  document.getElementById('nums').textContent=d.total+' / '+d.limit;
+  document.getElementById('bigTime').textContent=d.time;
+  document.getElementById('colI').textContent=d.inp;
+  document.getElementById('colO').textContent=d.out;
+  document.getElementById('colC').textContent=d.cache;
+  document.getElementById('btnR').disabled=false;
+  document.getElementById('btnR').innerHTML='Refresh';
 }}
-
-// Called from Python after each refresh
-function updateData(d) {{
-  const col = _pctColor(d.pct);
-  document.getElementById('fill').style.width      = d.pct + '%';
-  document.getElementById('fill').style.background = col;
-  document.getElementById('bigPct').textContent    = d.pct + '% used';
-  document.getElementById('bigPct').style.color    = col;
-  document.getElementById('usageNums').textContent = d.total + ' / ' + d.limit;
-  document.getElementById('bigTime').textContent   = d.time;
-  document.getElementById('colInp').textContent    = d.inp;
-  document.getElementById('colOut').textContent    = d.out;
-  document.getElementById('colCache').textContent  = d.cache;
-  document.getElementById('refreshBtn').disabled   = false;
-  document.getElementById('refreshBtn').innerHTML  = 'Refresh';
+function onRefresh(){{
+  document.getElementById('btnR').disabled=true;
+  document.getElementById('btnR').innerHTML='<span class=spin>↻</span>';
+  window.webkit.messageHandlers.cb.postMessage('refresh');
 }}
-
-function onRefresh() {{
-  document.getElementById('refreshBtn').disabled  = true;
-  document.getElementById('refreshBtn').innerHTML = '<span class=spin>↻</span>';
-  window.webkit.messageHandlers.claudebar.postMessage('refresh');
-}}
-
-function onQuit() {{
-  window.webkit.messageHandlers.claudebar.postMessage('quit');
-}}
-
-// Countdown (visual only)
-let _mins = {d['mins']};
-setInterval(() => {{
-  if (_mins <= 0) return;
-  _mins--;
-  const h = Math.floor(_mins/60), m = _mins%60;
-  document.getElementById('bigTime').textContent = h > 0 ? h+'h '+m+'m' : (_mins > 0 ? _mins+'m' : '—');
-}}, 60000);
-</script>
-</body>
-</html>"""
+function onQuit(){{window.webkit.messageHandlers.cb.postMessage('quit')}}
+let _m={d['mins']};
+setInterval(()=>{{
+  if(_m<=0)return;_m--;
+  const h=Math.floor(_m/60),m=_m%60;
+  document.getElementById('bigTime').textContent=h>0?h+'h '+m+'m':(_m>0?_m+'m':'—');
+}},60000);
+</script></body></html>"""
 
 # ── AppDelegate ───────────────────────────────────────────────────────────────
-class ClaudeBarDelegate(NSObject):
-
-    # PyObjC instance variables
+class AppDelegate(NSObject):
     statusItem = objc.ivar()
     popover    = objc.ivar()
     webView    = objc.ivar()
 
-    def applicationDidFinishLaunching_(self, _notif):
-        AppKit.NSApp.setActivationPolicy_(
-            AppKit.NSApplicationActivationPolicyAccessory   # hide Dock icon
-        )
-        self._setup_status_item()
+    def applicationDidFinishLaunching_(self, _):
+        AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+        self._setup_bar()
         self._setup_popover()
-        self._start_polling()
-        self._refresh()   # initial data load
+        threading.Thread(target=self._poll, daemon=True).start()
+        self._refresh()
 
-    # ── Status bar ────────────────────────────────────────────────────────────
-    def _setup_status_item(self):
-        self.statusItem = (
-            AppKit.NSStatusBar.systemStatusBar()
-                .statusItemWithLength_(AppKit.NSVariableStatusItemLength)
-        )
+    def _setup_bar(self):
+        self.statusItem = (AppKit.NSStatusBar.systemStatusBar()
+                           .statusItemWithLength_(AppKit.NSVariableStatusItemLength))
         btn = self.statusItem.button()
         btn.setTitle_("☁ …")
         btn.setTarget_(self)
-        btn.setAction_(objc.selector(
-            self.handleClick_,
-            selector=b"handleClick:",
-            signature=b"v@:@",
-        ))
+        btn.setAction_(objc.selector(self.click_, selector=b"click:",
+                                     signature=b"v@:@"))
 
-    def _sync_button(self, d: dict):
-        pct  = d["pct"]
-        mins = d["mins"]
-        lbl  = f"☁ {pct}%·{mins}m" if mins > 0 else f"☁ {pct}%"
-
-        # Colour the percentage
-        pct_color: AppKit.NSColor = (
-            AppKit.NSColor.systemGreenColor()  if pct < 60 else
-            AppKit.NSColor.systemOrangeColor() if pct < 85 else
-            AppKit.NSColor.systemRedColor()
-        )
-        attrs_pct  = {AppKit.NSForegroundColorAttributeName: pct_color,
-                      AppKit.NSFontAttributeName: AppKit.NSFont.menuBarFontOfSize_(13)}
-        attrs_rest = {AppKit.NSForegroundColorAttributeName: AppKit.NSColor.labelColor(),
-                      AppKit.NSFontAttributeName: AppKit.NSFont.menuBarFontOfSize_(13)}
-
-        astr = AppKit.NSMutableAttributedString.alloc().initWithString_(lbl)
-        full = AppKit.NSMakeRange(0, len(lbl))
-        astr.addAttributes_range_(attrs_rest, full)
-        pct_str = f"{pct}%"
-        idx = lbl.find(pct_str)
-        if idx >= 0:
-            astr.addAttributes_range_(attrs_pct,
-                                      AppKit.NSMakeRange(idx, len(pct_str)))
-        self.statusItem.button().setAttributedTitle_(astr)
-
-    # ── Popover ───────────────────────────────────────────────────────────────
     def _setup_popover(self):
-        d = read_stats()
-        html = _build_html(d)
-
+        d   = read_stats()
         cfg = WebKit.WKWebViewConfiguration.alloc().init()
-        # Register message handler for JS → Python bridge
-        cfg.userContentController().addScriptMessageHandler_name_(self, "claudebar")
-
-        frame = NSMakeRect(0, 0, 340, 0)   # height auto
-        self.webView = (
-            WebKit.WKWebView.alloc()
-                .initWithFrame_configuration_(frame, cfg)
-        )
-        self.webView.setFrame_(NSMakeRect(0, 0, 340, 430))
-        self.webView.loadHTMLString_baseURL_(html, None)
-
+        cfg.userContentController().addScriptMessageHandler_name_(self, "cb")
+        self.webView = (WebKit.WKWebView.alloc()
+                        .initWithFrame_configuration_(NSMakeRect(0,0,340,490), cfg))
+        self.webView.loadHTMLString_baseURL_(_build_html(d), None)
         vc = AppKit.NSViewController.alloc().init()
         vc.setView_(self.webView)
-
         self.popover = AppKit.NSPopover.alloc().init()
-        self.popover.setContentSize_(NSMakeSize(340, 430))
+        self.popover.setContentSize_(NSMakeSize(340, 490))
         self.popover.setContentViewController_(vc)
         self.popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
 
-    # WKScriptMessageHandler protocol
-    def userContentController_didReceiveScriptMessage_(self, _ctrl, msg):
-        body = msg.body()
-        if body == "refresh":
-            threading.Thread(target=self._refresh, daemon=True).start()
-        elif body == "quit":
-            AppKit.NSApp.terminate_(None)
-
-    # ── Click handler ─────────────────────────────────────────────────────────
-    def handleClick_(self, sender):
+    def click_(self, sender):
         if self.popover.isShown():
             self.popover.performClose_(sender)
         else:
             btn = self.statusItem.button()
             self.popover.showRelativeToRect_ofView_preferredEdge_(
-                btn.bounds(), btn,
-                AppKit.NSRectEdgeMinY,   # arrow points up → popover drops down
-            )
+                btn.bounds(), btn, AppKit.NSRectEdgeMinY)
             AppKit.NSApp.activateIgnoringOtherApps_(True)
 
-    # ── Polling ───────────────────────────────────────────────────────────────
-    def _start_polling(self):
-        def _loop():
-            while True:
-                time.sleep(10)
-                self._refresh()
-        threading.Thread(target=_loop, daemon=True).start()
+    def userContentController_didReceiveScriptMessage_(self, _, msg):
+        if msg.body() == "refresh":
+            threading.Thread(target=self._refresh, daemon=True).start()
+        elif msg.body() == "quit":
+            AppKit.NSApp.terminate_(None)
+
+    def _poll(self):
+        while True:
+            time.sleep(2)
+            self._refresh()
 
     def _refresh(self):
         d = read_stats()
-        NSOperationQueue.mainQueue().addOperationWithBlock_(
-            lambda: self._apply(d)
-        )
+        NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: self._apply(d))
 
-    def _apply(self, d: dict):
-        self._sync_button(d)
-        js = (
-            f"updateData({{"
-            f"pct:{d['pct']},total:'{d['total']}',limit:'{d['limit']}',"
-            f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
-            f"time:'{d['time']}',mins:{d['mins']}"
-            f"}});"
-        )
+    def _apply(self, d):
+        # Status bar label
+        pct  = d["pct"]
+        mins = d["mins"]
+        col  = (AppKit.NSColor.systemGreenColor()  if pct < 60 else
+                AppKit.NSColor.systemOrangeColor() if pct < 85 else
+                AppKit.NSColor.systemRedColor())
+        lbl  = f"☁ {pct}%{'  ·  '+str(mins)+'m' if mins else ''}"
+        astr = AppKit.NSMutableAttributedString.alloc().initWithString_(lbl)
+        fn   = AppKit.NSFont.menuBarFontOfSize_(13)
+        astr.addAttribute_value_range_(
+            AppKit.NSForegroundColorAttributeName,
+            AppKit.NSColor.labelColor(),
+            AppKit.NSMakeRange(0, len(lbl)))
+        astr.addAttribute_value_range_(
+            AppKit.NSFontAttributeName, fn,
+            AppKit.NSMakeRange(0, len(lbl)))
+        pct_s = f"{pct}%"
+        idx   = lbl.find(pct_s)
+        if idx >= 0:
+            astr.addAttribute_value_range_(
+                AppKit.NSForegroundColorAttributeName, col,
+                AppKit.NSMakeRange(idx, len(pct_s)))
+        self.statusItem.button().setAttributedTitle_(astr)
+
+        # Push data into WebView
+        js = (f"updateData({{"
+              f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
+              f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
+              f"time:'{d['time']}',mins:{mins}}});")
         self.webView.evaluateJavaScript_completionHandler_(js, None)
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app      = AppKit.NSApplication.sharedApplication()
-    delegate = ClaudeBarDelegate.alloc().init()
-    app.setDelegate_(delegate)
-    app.run()
+    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+        AppKit.NSApplicationActivationPolicyAccessory)
+    delegate = AppDelegate.alloc().init()
+    AppKit.NSApplication.sharedApplication().setDelegate_(delegate)
+    AppKit.NSApplication.sharedApplication().run()
