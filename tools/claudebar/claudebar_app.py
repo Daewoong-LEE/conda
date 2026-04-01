@@ -286,6 +286,7 @@ class AppDelegate(NSObject):
         threading.Thread(target=self._poll, daemon=True).start()
         self._refresh()
 
+    @objc.python_method
     def _setup_bar(self):
         self.statusItem = (AppKit.NSStatusBar.systemStatusBar()
                            .statusItemWithLength_(AppKit.NSVariableStatusItemLength))
@@ -295,6 +296,7 @@ class AppDelegate(NSObject):
         btn.setAction_(objc.selector(self.click_, selector=b"click:",
                                      signature=b"v@:@"))
 
+    @objc.python_method
     def _setup_popover(self):
         d   = read_stats()
         cfg = WebKit.WKWebViewConfiguration.alloc().init()
@@ -324,15 +326,18 @@ class AppDelegate(NSObject):
         elif msg.body() == "quit":
             AppKit.NSApp.terminate_(None)
 
+    @objc.python_method
     def _poll(self):
         while True:
             time.sleep(2)
             self._refresh()
 
+    @objc.python_method
     def _refresh(self):
         d = read_stats()
         NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: self._apply(d))
 
+    @objc.python_method
     def _apply(self, d):
         # Status bar label
         pct  = d["pct"]
