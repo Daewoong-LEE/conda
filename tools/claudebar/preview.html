@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClaudeBar Preview</title>
+<style>
+  /* ── Reset ─────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    background: #1a1a2e;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* ── macOS menu bar simulation ─────────────────────────────── */
+  .menubar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 28px;
+    background: rgba(30, 30, 30, 0.92);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 100;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .menubar-left {
+    display: flex; align-items: center; gap: 18px;
+  }
+  .menubar-apple { font-size: 15px; opacity: 0.9; }
+  .menubar-item  { font-size: 13px; font-weight: 500; color: rgba(255,255,255,0.85); cursor: default; }
+  .menubar-item.bold { font-weight: 700; }
+
+  .menubar-right {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .menubar-icon { font-size: 14px; color: rgba(255,255,255,0.7); cursor: default; }
+
+  /* ── Status bar button ──────────────────────────────────────── */
+  .status-btn {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .status-btn:hover  { background: rgba(255,255,255,0.12); }
+  .status-btn.active { background: rgba(255,255,255,0.18); }
+  .status-btn .cloud { font-size: 13px; }
+  .status-btn .label {
+    font-size: 13px; font-weight: 500;
+    color: rgba(255,255,255,0.9);
+    letter-spacing: -0.2px;
+  }
+  .status-btn .pct   { color: #32d74b; font-weight: 600; }
+  .status-btn .sep   { color: rgba(255,255,255,0.4); margin: 0 1px; }
+  .status-btn .time  { color: rgba(255,255,255,0.75); }
+
+  /* ── Popover ────────────────────────────────────────────────── */
+  .popover-wrap {
+    position: fixed;
+    top: 33px;
+    right: 120px;
+    z-index: 200;
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    filter: drop-shadow(0 8px 32px rgba(0,0,0,0.55))
+            drop-shadow(0 2px 8px rgba(0,0,0,0.3));
+  }
+  .popover-wrap.open {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+  }
+
+  /* Notch arrow */
+  .popover-arrow {
+    width: 0; height: 0;
+    border-left:  10px solid transparent;
+    border-right: 10px solid transparent;
+    border-bottom: 10px solid rgba(255,255,255,0.13);
+    margin-left: auto; margin-right: 28px;
+  }
+
+  .popover-card {
+    width: 340px;
+    background: linear-gradient(160deg, #3a8fd4 0%, #2d7bbf 50%, #2670b0 100%);
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.18);
+    overflow: hidden;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────── */
+  .header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px;
+  }
+  .header .icon { font-size: 20px; filter: brightness(1.3) saturate(1.2); }
+  .header .title { font-size: 17px; font-weight: 700; color: #fff; flex: 1; }
+  .badge {
+    font-size: 13px; font-weight: 500; color: rgba(255,255,255,0.9);
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.2);
+    padding: 3px 10px; border-radius: 8px;
+  }
+
+  /* ── Divider ────────────────────────────────────────────────── */
+  .divider { height: 1px; background: rgba(255,255,255,0.2); }
+
+  /* ── Main section ───────────────────────────────────────────── */
+  .main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+  /* Token usage row */
+  .usage-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .label { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.9); }
+  .usage-nums { font-size: 13px; color: rgba(255,255,255,0.75); }
+
+  /* Progress bar */
+  .progress-track {
+    height: 8px; background: rgba(255,255,255,0.2);
+    border-radius: 999px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 999px;
+    background: #32d74b;
+    transition: width 0.6s cubic-bezier(.4,0,.2,1);
+  }
+
+  /* Big percentage */
+  .big-pct {
+    font-size: 34px; font-weight: 800; color: #32d74b; line-height: 1;
+    letter-spacing: -1px;
+  }
+
+  /* Session time */
+  .time-row {
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .big-time {
+    font-size: 24px; font-weight: 700; color: #fff; line-height: 1;
+    letter-spacing: -0.5px;
+  }
+  .window-label {
+    font-size: 14px; color: rgba(255,255,255,0.65);
+  }
+
+  /* Three columns */
+  .cols { display: flex; gap: 0; }
+  .col { flex: 1; }
+  .col-title { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85); margin-bottom: 4px; }
+  .col-val   { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; font-family: "SF Mono", "Menlo", monospace; }
+  .cyan  { color: #5ac8fa; }
+  .pink  { color: #ff6ec7; }
+  .green { color: #32d74b; }
+
+  /* ── Footer ─────────────────────────────────────────────────── */
+  .footer {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px;
+  }
+  .btn-refresh, .btn-quit {
+    font-size: 14px; font-weight: 500;
+    cursor: pointer;
+    border: none; background: none;
+    padding: 4px 8px; border-radius: 6px;
+    transition: background 0.12s;
+    font-family: inherit;
+  }
+  .btn-refresh { color: #4a9eff; }
+  .btn-refresh:hover { background: rgba(74,158,255,0.15); }
+  .btn-quit    { color: rgba(255,255,255,0.85); }
+  .btn-quit:hover { background: rgba(255,255,255,0.1); }
+
+  .spinning { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+  /* ── Background wallpaper hint ──────────────────────────────── */
+  .desktop {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at 30% 50%, #1a3a5c 0%, #0d1b2a 70%);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .hint {
+    text-align: center; color: rgba(255,255,255,0.25);
+    font-size: 14px; margin-top: 60px;
+    pointer-events: none;
+  }
+  .hint strong { color: rgba(255,255,255,0.45); }
+</style>
+</head>
+<body>
+
+<div class="desktop">
+  <div class="hint">
+    <strong>ClaudeBar</strong> Preview<br>
+    상단 바의 <strong>☁ 아이콘</strong>을 클릭해보세요
+  </div>
+</div>
+
+<!-- macOS menu bar -->
+<div class="menubar">
+  <div class="menubar-left">
+    <span class="menubar-apple">&#xf8ff;</span>
+    <span class="menubar-item bold">Finder</span>
+    <span class="menubar-item">File</span>
+    <span class="menubar-item">Edit</span>
+    <span class="menubar-item">View</span>
+    <span class="menubar-item">Go</span>
+  </div>
+  <div class="menubar-right">
+    <span class="menubar-icon">⌨</span>
+    <span class="menubar-icon">🔋</span>
+    <span class="menubar-icon">📶</span>
+
+    <!-- ClaudeBar status item -->
+    <div class="status-btn" id="statusBtn" onclick="togglePopover()">
+      <span class="cloud">☁</span>
+      <span class="label">
+        <span class="pct" id="pctLabel">22.8%</span>
+        <span class="sep">·</span>
+        <span class="time" id="timeLabel">97m</span>
+      </span>
+    </div>
+
+    <span class="menubar-icon">🔔</span>
+    <span class="menubar-item">11:42</span>
+  </div>
+</div>
+
+<!-- Popover -->
+<div class="popover-wrap" id="popover">
+  <div class="popover-arrow"></div>
+  <div class="popover-card">
+
+    <!-- Header -->
+    <div class="header">
+      <span class="icon">☁️</span>
+      <span class="title">Claude Code</span>
+      <span class="badge">Max 5x</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Main -->
+    <div class="main">
+
+      <!-- Token usage -->
+      <div>
+        <div class="usage-row">
+          <span class="label">Token Usage</span>
+          <span class="usage-nums" id="usageNums">34.2k / 150.0k</span>
+        </div>
+        <div style="margin-top:8px">
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill" style="width:22.8%"></div>
+          </div>
+        </div>
+        <div class="big-pct" id="bigPct" style="margin-top:8px">22.8% used</div>
+      </div>
+
+      <!-- Session time -->
+      <div>
+        <div class="label" style="margin-bottom:6px">Session Time Remaining</div>
+        <div class="time-row">
+          <span class="big-time" id="bigTime">1h 37m</span>
+          <span class="window-label">of 5h window</span>
+        </div>
+      </div>
+
+      <!-- Three columns -->
+      <div class="cols">
+        <div class="col">
+          <div class="col-title">Input</div>
+          <div class="col-val cyan" id="colInp">404</div>
+        </div>
+        <div class="col">
+          <div class="col-title">Output</div>
+          <div class="col-val pink" id="colOut">33.8k</div>
+        </div>
+        <div class="col">
+          <div class="col-title">Cache</div>
+          <div class="col-val green" id="colCache">7.52M</div>
+        </div>
+      </div>
+
+    </div><!-- /main -->
+
+    <div class="divider"></div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <button class="btn-refresh" id="refreshBtn" onclick="doRefresh()">Refresh</button>
+      <button class="btn-quit"    onclick="doQuit()">Quit</button>
+    </div>
+
+  </div><!-- /card -->
+</div><!-- /popover -->
+
+<script>
+  let popoverOpen = false;
+
+  function togglePopover() {
+    const pop = document.getElementById('popover');
+    const btn = document.getElementById('statusBtn');
+    popoverOpen = !popoverOpen;
+    pop.classList.toggle('open', popoverOpen);
+    btn.classList.toggle('active', popoverOpen);
+  }
+
+  // Close popover when clicking outside
+  document.addEventListener('click', e => {
+    if (popoverOpen
+        && !document.getElementById('popover').contains(e.target)
+        && !document.getElementById('statusBtn').contains(e.target)) {
+      popoverOpen = false;
+      document.getElementById('popover').classList.remove('open');
+      document.getElementById('statusBtn').classList.remove('active');
+    }
+  });
+
+  function doRefresh() {
+    const btn = document.getElementById('refreshBtn');
+    btn.innerHTML = '<span class="spinning">↻</span> 새로고침 중…';
+    btn.disabled = true;
+    setTimeout(() => {
+      btn.innerHTML = 'Refresh';
+      btn.disabled = false;
+    }, 1200);
+  }
+
+  function doQuit() {
+    if (confirm('ClaudeBar를 종료할까요?')) window.close();
+  }
+
+  // ── Live data injected from Python ──────────────────────────────────────
+  const DATA = {
+    pct:   22.8,
+    total: "34.2k",
+    limit: "150.0k",
+    inp:   "404",
+    out:   "33.8k",
+    cache: "7.52M",
+    cost:  "$5.234",
+    time:  "1h 37m",
+    mins:  97,
+  };
+
+  function applyData() {
+    const pctColor = DATA.pct < 60 ? '#32d74b' : DATA.pct < 85 ? '#ff9f0a' : '#ff453a';
+    document.getElementById('pctLabel').style.color   = pctColor;
+    document.getElementById('pctLabel').textContent   = DATA.pct + '%';
+    document.getElementById('timeLabel').textContent  = DATA.mins > 0 ? DATA.mins + 'm' : '';
+    document.getElementById('usageNums').textContent  = DATA.total + ' / ' + DATA.limit;
+    document.getElementById('progressFill').style.width      = DATA.pct + '%';
+    document.getElementById('progressFill').style.background = pctColor;
+    document.getElementById('bigPct').textContent     = DATA.pct + '% used';
+    document.getElementById('bigPct').style.color     = pctColor;
+    document.getElementById('bigTime').textContent    = DATA.time;
+    document.getElementById('colInp').textContent     = DATA.inp;
+    document.getElementById('colOut').textContent     = DATA.out;
+    document.getElementById('colCache').textContent   = DATA.cache;
+  }
+
+  applyData();
+
+  // ── Countdown timer (UI only) ────────────────────────────────────────────
+  let minsLeft = DATA.mins;
+  setInterval(() => {
+    if (minsLeft <= 0) return;
+    minsLeft--;
+    const h = Math.floor(minsLeft / 60), m = minsLeft % 60;
+    document.getElementById('bigTime').textContent = h > 0 ? h+'h '+m+'m' : m+'m';
+    document.getElementById('timeLabel').textContent = minsLeft > 0 ? minsLeft+'m' : '';
+  }, 60000);
+</script>
+</body>
+</html>
