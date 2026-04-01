@@ -120,15 +120,15 @@ def _fetch_claude_ai_usage():
         return None
 
 def _get_live_pct():
-    """Return (pct, synced). Caches result for 60s."""
+    """Return (pct, synced). Caches result for 60s regardless of success."""
     try:
         now_ts = datetime.now().timestamp()
         live = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
         if now_ts - live.get("ts", 0) > 60:
             fetched = _fetch_claude_ai_usage()
-            if fetched is not None:
-                live = {"ts": now_ts, "pct": fetched}
-                _LIVE_CACHE.write_text(json.dumps(live))
+            # Always update ts to avoid retrying every 2s on failure
+            live = {"ts": now_ts, "pct": fetched if fetched is not None else live.get("pct")}
+            _LIVE_CACHE.write_text(json.dumps(live))
         if live.get("pct") is not None:
             return live["pct"], True
     except Exception:
