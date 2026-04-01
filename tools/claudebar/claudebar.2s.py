@@ -10,7 +10,7 @@
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 
 import json, os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -79,60 +79,90 @@ def _save_cache(data: dict, mtime: float) -> None:
         pass
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
-def _read_stats() -> dict:
-    today_utc = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+def _parse_ts(s: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def _read_all_entries() -> list[tuple[datetime, dict]]:
+    """Return all assistant entries as (timestamp, entry) sorted by time."""
+    entries = []
+    if not PROJECTS.is_dir():
+        return entries
+    for f in PROJECTS.rglob("*.jsonl"):
+        try:
+            lines = f.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip(): continue
+            try: e = json.loads(line)
+            except: continue
+            if e.get("type") != "assistant": continue
+            ts = _parse_ts(e.get("timestamp", ""))
+            if ts is None: continue
+            msg   = e.get("message") or {}
+            usage = msg.get("usage") or {}
+            if usage.get("input_tokens", 0) == 0 and usage.get("output_tokens", 0) == 0:
+                continue
+            entries.append((ts, e))
+    entries.sort(key=lambda x: x[0])
+    return entries
+
+def _aggregate(entries, cutoff: datetime) -> dict:
     inp = out = cw = cr = 0
     cost = 0.0
     by_model: dict = {}
     first_ts = None
 
-    if PROJECTS.is_dir():
-        for f in PROJECTS.rglob("*.jsonl"):
-            try:
-                lines = f.read_text(errors="ignore").splitlines()
-            except OSError:
-                continue
-            for line in lines:
-                if not line.strip(): continue
-                try: e = json.loads(line)
-                except: continue
-                if e.get("type") != "assistant": continue
-                ts = None
-                try:
-                    ts = datetime.fromisoformat(
-                        e.get("timestamp","").replace("Z","+00:00")
-                    )
-                except Exception:
-                    pass
-                if ts is None or ts < today_utc: continue
-                if first_ts is None or ts < first_ts: first_ts = ts
-                msg   = e.get("message") or {}
-                usage = msg.get("usage") or {}
-                model = msg.get("model","unknown")
-                i  = usage.get("input_tokens",0)
-                o  = usage.get("output_tokens",0)
-                cc = usage.get("cache_creation_input_tokens",0)
-                rc = usage.get("cache_read_input_tokens",0)
-                if i == 0 and o == 0: continue
-                p = _price(model)
-                c = (i*p[0]+o*p[1]+cc*p[2]+rc*p[3]) / 1_000_000
-                inp+=i; out+=o; cw+=cc; cr+=rc; cost+=c
-                bm = by_model.setdefault(model, [0,0,0,0,0.0])
-                bm[0]+=i; bm[1]+=o; bm[2]+=cc; bm[3]+=rc; bm[4]+=c
+    for ts, e in entries:
+        if ts < cutoff: continue
+        if first_ts is None: first_ts = ts
+        msg   = e.get("message") or {}
+        usage = msg.get("usage") or {}
+        model = msg.get("model", "unknown")
+        i  = usage.get("input_tokens", 0)
+        o  = usage.get("output_tokens", 0)
+        cc = usage.get("cache_creation_input_tokens", 0)
+        rc = usage.get("cache_read_input_tokens", 0)
+        p  = _price(model)
+        c  = (i*p[0]+o*p[1]+cc*p[2]+rc*p[3]) / 1_000_000
+        inp+=i; out+=o; cw+=cc; cr+=rc; cost+=c
+        bm = by_model.setdefault(model, [0,0,0,0,0.0])
+        bm[0]+=i; bm[1]+=o; bm[2]+=cc; bm[3]+=rc; bm[4]+=c
 
+    return dict(inp=inp, out=out, cw=cw, cr=cr, cost=cost,
+                by_model=by_model, first_ts=first_ts)
+
+def _read_stats() -> dict:
+    now     = datetime.now(timezone.utc)
+    entries = _read_all_entries()
+
+    # ① 오늘(자정 UTC 이후) 데이터 시도
+    today_cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    d = _aggregate(entries, today_cutoff)
+
+    # ② 오늘 데이터 없으면 → 가장 최근 5시간 윈도우로 폴백
+    session_label = "오늘"
+    if d["inp"] + d["out"] == 0 and entries:
+        last_ts      = entries[-1][0]
+        window_start = last_ts - timedelta(hours=5)
+        d            = _aggregate(entries, window_start)
+        local_date   = last_ts.astimezone().strftime("%m/%d")
+        session_label = f"마지막 세션 ({local_date})"
+
+    # ③ 세션 잔여 시간 계산
     mins_remaining = 0
-    if first_ts:
-        elapsed        = (datetime.now(timezone.utc) - first_ts).total_seconds()
+    if d["first_ts"]:
+        elapsed        = (now - d["first_ts"]).total_seconds()
         mins_remaining = max(0, int((5*3600 - elapsed) / 60))
 
-    return dict(
-        inp=inp, out=out, cw=cw, cr=cr, cost=cost,
-        by_model=by_model,
-        mins=mins_remaining,
-        first_ts=first_ts.isoformat() if first_ts else None,
-    )
+    first_ts_iso = d["first_ts"].isoformat() if d["first_ts"] else None
+    return dict(inp=d["inp"], out=d["out"], cw=d["cw"], cr=d["cr"],
+                cost=d["cost"], by_model=d["by_model"],
+                mins=mins_remaining, session_label=session_label,
+                first_ts=first_ts_iso)
 
 # ── Main: use cache if files unchanged, else re-read ─────────────────────────
 current_mtime = _fingerprint()
@@ -145,10 +175,11 @@ else:
     _save_cache(d, current_mtime)       # persist for next run
 
 # ── Compute display values ────────────────────────────────────────────────────
-inp, out, cw, cr = d["inp"], d["out"], d["cw"], d["cr"]
-cost      = d["cost"]
-by_model  = d["by_model"]
-mins      = d["mins"]
+inp, out, cw, cr   = d["inp"], d["out"], d["cw"], d["cr"]
+cost               = d["cost"]
+by_model           = d["by_model"]
+mins               = d["mins"]
+session_label      = d.get("session_label", "오늘")
 
 limit   = 150_000
 total   = inp + out
@@ -168,7 +199,7 @@ print(f"☁ {pct}%{sep}{mins_label} | color={pct_col} size=13")
 print("---")
 print(f"☁  Claude Code | size=15 color=white bold=true sfimage=cloud.fill")
 print("---")
-print(f"Token Usage | size=12 color=white bold=true")
+print(f"Token Usage  ({session_label}) | size=12 color=white bold=true")
 print(f"{bar_str}  {pct}% | size=12 font=Menlo color={pct_col}")
 print(f"{_fmt(total)} / {_fmt(limit)} | size=11 color=#aaaaaa")
 print("---")
