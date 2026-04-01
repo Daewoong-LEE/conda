@@ -5,7 +5,7 @@ ClaudeBar — macOS status bar app (NSPopover + WKWebView)
 Install:  pip install pyobjc
 Run:      python3 claudebar_app.py
 """
-import sys, json, threading, time
+import sys, json, re, threading, time, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -44,6 +44,96 @@ def _fmt(n):        # compact  2.4k / 23.2M
 
 def _fmt_exact(n):  # 51,881
     return f"{n:,}"
+
+# ── claude.ai live usage (browser cookies) ────────────────────────────────────
+_LIVE_CACHE = Path.home() / ".claudebar_live.json"
+
+def _fetch_claude_ai_usage():
+    try:
+        import browser_cookie3
+        cookies = None
+        for loader in [
+            lambda: browser_cookie3.chrome(domain_name=".claude.ai"),
+            lambda: browser_cookie3.safari(domain_name=".claude.ai"),
+            lambda: browser_cookie3.firefox(domain_name=".claude.ai"),
+        ]:
+            try:
+                jar = loader()
+                if jar:
+                    cookies = jar
+                    break
+            except Exception:
+                continue
+        if not cookies:
+            return None
+        cookie_header = "; ".join(
+            f"{c.name}={c.value}"
+            for c in cookies
+            if "claude.ai" in (c.domain or "")
+        )
+        if not cookie_header:
+            return None
+        req = urllib.request.Request(
+            "https://claude.ai/settings/usage",
+            headers={
+                "Cookie": cookie_header,
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if not m:
+            return None
+        data = json.loads(m.group(1))
+
+        def _find(obj, depth=0):
+            if depth > 10: return None
+            if isinstance(obj, dict):
+                for key in obj:
+                    lkey = key.lower()
+                    if "percent" in lkey or "usage" in lkey:
+                        val = obj[key]
+                        if isinstance(val, (int, float)) and 0 <= val <= 100:
+                            return float(val)
+                        if isinstance(val, str):
+                            try:
+                                f = float(val.strip("%"))
+                                if 0 <= f <= 100: return f
+                            except ValueError:
+                                pass
+                for val in obj.values():
+                    r = _find(val, depth + 1)
+                    if r is not None: return r
+            elif isinstance(obj, list):
+                for item in obj:
+                    r = _find(item, depth + 1)
+                    if r is not None: return r
+            return None
+
+        return _find(data)
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+def _get_live_pct():
+    """Return (pct, synced). Caches result for 60s."""
+    try:
+        now_ts = datetime.now().timestamp()
+        live = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
+        if now_ts - live.get("ts", 0) > 60:
+            fetched = _fetch_claude_ai_usage()
+            if fetched is not None:
+                live = {"ts": now_ts, "pct": fetched}
+                _LIVE_CACHE.write_text(json.dumps(live))
+        if live.get("pct") is not None:
+            return live["pct"], True
+    except Exception:
+        pass
+    return None, False
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
 _PROJECTS = Path.home() / ".claude" / "projects"
@@ -112,7 +202,11 @@ def read_stats():
 
     limit = 150_000
     total = d["inp"] + d["out"]
-    pct   = round(total / limit * 100, 1)
+
+    # claude.ai 실시간 동기화 시도
+    live_pct, synced = _get_live_pct()
+    pct = live_pct if live_pct is not None else round(total / limit * 100, 1)
+
     h, m  = divmod(mins, 60)
     time_str = f"{h}h {m}m" if h > 0 else (f"{m}m" if m > 0 else "—")
 
@@ -131,6 +225,7 @@ def read_stats():
 
     return dict(
         pct=pct,
+        synced=synced,
         total_exact=_fmt_exact(total),
         limit_exact=_fmt_exact(limit),
         inp=_fmt(d["inp"]), out=_fmt(d["out"]), cache=_fmt(d["cw"]+d["cr"]),
@@ -206,7 +301,7 @@ button{{background:none;border:none;cursor:pointer;font-family:inherit;font-size
 <div class="header">
   <span class="hdr-icon">☁️</span>
   <span class="hdr-title">Claude Code</span>
-  <span class="badge">Max 5x</span>
+  <span class="badge" id="badge">{'claude.ai ✓' if d['synced'] else 'Local'}</span>
 </div>
 <div class="divider"></div>
 <div class="main">
@@ -256,6 +351,7 @@ function updateData(d){{
   document.getElementById('colI').textContent=d.inp;
   document.getElementById('colO').textContent=d.out;
   document.getElementById('colC').textContent=d.cache;
+  document.getElementById('badge').textContent=d.synced?'claude.ai ✓':'Local';
   document.getElementById('btnR').disabled=false;
   document.getElementById('btnR').innerHTML='Refresh';
 }}
@@ -361,10 +457,11 @@ class AppDelegate(NSObject):
                     AppKit.NSMakeRange(idx, len(pct_s)))
             self.statusItem.button().setAttributedTitle_(astr)
 
+            synced_js = "true" if d["synced"] else "false"
             js = (f"updateData({{"
                   f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
                   f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
-                  f"time:'{d['time']}',mins:{mins}}});")
+                  f"time:'{d['time']}',mins:{mins},synced:{synced_js}}});")
             self.webView.evaluateJavaScript_completionHandler_(js, None)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_update)
