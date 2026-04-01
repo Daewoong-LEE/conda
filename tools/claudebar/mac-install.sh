@@ -5,7 +5,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_SRC="$SCRIPT_DIR/claudebar.10s.py"
+PLUGIN_SRC="$SCRIPT_DIR/claudebar.2s.py"
 
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -38,9 +38,9 @@ PLUGIN_DIR="$HOME/Library/Application Support/SwiftBar/plugins"
 mkdir -p "$PLUGIN_DIR"
 
 # ── 5. 플러그인 복사 & 실행 권한 부여 ─────────────────────────────────────────
-cp "$PLUGIN_SRC" "$PLUGIN_DIR/claudebar.10s.py"
-chmod +x "$PLUGIN_DIR/claudebar.10s.py"
-echo "✓  플러그인 설치 완료: $PLUGIN_DIR/claudebar.10s.py"
+cp "$PLUGIN_SRC" "$PLUGIN_DIR/claudebar.2s.py"
+chmod +x "$PLUGIN_DIR/claudebar.2s.py"
+echo "✓  플러그인 설치 완료: $PLUGIN_DIR/claudebar.2s.py"
 
 # ── 6. SwiftBar 실행 ──────────────────────────────────────────────────────────
 echo "==> SwiftBar 실행 중..."
