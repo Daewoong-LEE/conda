@@ -335,40 +335,39 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _refresh(self):
         d = read_stats()
-        NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: self._apply(d))
 
-    @objc.python_method
-    def _apply(self, d):
-        # Status bar label
-        pct  = d["pct"]
-        mins = d["mins"]
-        col  = (AppKit.NSColor.systemGreenColor()  if pct < 60 else
-                AppKit.NSColor.systemOrangeColor() if pct < 85 else
-                AppKit.NSColor.systemRedColor())
-        lbl  = f"☁ {pct}%{'  ·  '+str(mins)+'m' if mins else ''}"
-        astr = AppKit.NSMutableAttributedString.alloc().initWithString_(lbl)
-        fn   = AppKit.NSFont.menuBarFontOfSize_(13)
-        astr.addAttribute_value_range_(
-            AppKit.NSForegroundColorAttributeName,
-            AppKit.NSColor.labelColor(),
-            AppKit.NSMakeRange(0, len(lbl)))
-        astr.addAttribute_value_range_(
-            AppKit.NSFontAttributeName, fn,
-            AppKit.NSMakeRange(0, len(lbl)))
-        pct_s = f"{pct}%"
-        idx   = lbl.find(pct_s)
-        if idx >= 0:
+        # Inline closure — avoids method-with-argument ObjC registration issue
+        def _update():
+            pct  = d["pct"]
+            mins = d["mins"]
+            col  = (AppKit.NSColor.systemGreenColor()  if pct < 60 else
+                    AppKit.NSColor.systemOrangeColor() if pct < 85 else
+                    AppKit.NSColor.systemRedColor())
+            lbl  = f"☁ {pct}%{'  ·  '+str(mins)+'m' if mins else ''}"
+            astr = AppKit.NSMutableAttributedString.alloc().initWithString_(lbl)
+            fn   = AppKit.NSFont.menuBarFontOfSize_(13)
             astr.addAttribute_value_range_(
-                AppKit.NSForegroundColorAttributeName, col,
-                AppKit.NSMakeRange(idx, len(pct_s)))
-        self.statusItem.button().setAttributedTitle_(astr)
+                AppKit.NSForegroundColorAttributeName,
+                AppKit.NSColor.labelColor(),
+                AppKit.NSMakeRange(0, len(lbl)))
+            astr.addAttribute_value_range_(
+                AppKit.NSFontAttributeName, fn,
+                AppKit.NSMakeRange(0, len(lbl)))
+            pct_s = f"{pct}%"
+            idx   = lbl.find(pct_s)
+            if idx >= 0:
+                astr.addAttribute_value_range_(
+                    AppKit.NSForegroundColorAttributeName, col,
+                    AppKit.NSMakeRange(idx, len(pct_s)))
+            self.statusItem.button().setAttributedTitle_(astr)
 
-        # Push data into WebView
-        js = (f"updateData({{"
-              f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
-              f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
-              f"time:'{d['time']}',mins:{mins}}});")
-        self.webView.evaluateJavaScript_completionHandler_(js, None)
+            js = (f"updateData({{"
+                  f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
+                  f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
+                  f"time:'{d['time']}',mins:{mins}}});")
+            self.webView.evaluateJavaScript_completionHandler_(js, None)
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_update)
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
