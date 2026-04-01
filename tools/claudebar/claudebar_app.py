@@ -5,7 +5,7 @@ ClaudeBar — macOS status bar app (NSPopover + WKWebView)
 Install:  pip install pyobjc
 Run:      python3 claudebar_app.py
 """
-import sys, json, threading, time
+import sys, json, re, sqlite3, shutil, tempfile, threading, time, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -44,6 +44,116 @@ def _fmt(n):        # compact  2.4k / 23.2M
 
 def _fmt_exact(n):  # 51,881
     return f"{n:,}"
+
+# ── Claude desktop app usage (no keychain needed) ────────────────────────────
+_LIVE_CACHE = Path.home() / ".claudebar_live.json"
+# Electron stores cookies as plain SQLite — no keychain encryption
+_ELECTRON_COOKIES = Path.home() / "Library/Application Support/Claude/Cookies"
+
+def _read_electron_cookies():
+    """Read cookies from Claude desktop app's Electron SQLite store."""
+    if not _ELECTRON_COOKIES.exists():
+        return None
+    tmp = tempfile.mktemp(suffix=".db")
+    try:
+        shutil.copy2(str(_ELECTRON_COOKIES), tmp)
+        conn = sqlite3.connect(tmp)
+        rows = conn.execute(
+            "SELECT name, value FROM cookies WHERE host_key LIKE '%claude.ai%'"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return None
+    finally:
+        try: Path(tmp).unlink()
+        except: pass
+    # Skip encrypted values (start with 'v1') — means keychain is being used
+    pairs = [f"{n}={v}" for n, v in rows if v and not v.startswith("v1")]
+    return "; ".join(pairs) if pairs else None
+
+def _fetch_claude_usage():
+    """
+    Fetch real usage % and reset time from claude.ai using Claude desktop app cookies.
+    Returns dict with 'pct' and 'reset_mins', or None on failure.
+    """
+    try:
+        cookies = _read_electron_cookies()
+        if not cookies:
+            return None
+        req = urllib.request.Request(
+            "https://claude.ai/api/organizations",
+            headers={
+                "Cookie": cookies,
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            orgs = json.loads(resp.read())
+        org_id = orgs[0]["uuid"] if orgs else None
+        if not org_id:
+            return None
+
+        req2 = urllib.request.Request(
+            f"https://claude.ai/api/organizations/{org_id}/usage",
+            headers={
+                "Cookie": cookies,
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req2, timeout=5) as resp:
+            data = json.loads(resp.read())
+
+        # Find usage percent and reset time
+        pct = None
+        reset_mins = None
+
+        def _search(obj, depth=0):
+            nonlocal pct, reset_mins
+            if depth > 8: return
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    lk = k.lower()
+                    if pct is None and ("percent" in lk or ("usage" in lk and isinstance(v, (int, float)))):
+                        if isinstance(v, (int, float)) and 0 <= v <= 100:
+                            pct = float(v)
+                    if reset_mins is None and "reset" in lk and isinstance(v, str):
+                        try:
+                            ts = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                            diff = (ts - datetime.now(timezone.utc)).total_seconds()
+                            if diff > 0:
+                                reset_mins = int(diff / 60)
+                        except Exception:
+                            pass
+                    _search(v, depth + 1)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _search(item, depth + 1)
+
+        _search(data)
+        if pct is not None:
+            return {"pct": pct, "reset_mins": reset_mins}
+        return None
+    except Exception:
+        return None
+
+def _get_live():
+    """Return live usage dict (pct, reset_mins, synced). Cached 60s."""
+    try:
+        now_ts = datetime.now().timestamp()
+        cached = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
+        if now_ts - cached.get("ts", 0) > 60:
+            result = _fetch_claude_usage()
+            cached = {"ts": now_ts, **(result or {}), "synced": result is not None}
+            _LIVE_CACHE.write_text(json.dumps(cached))
+        if cached.get("synced"):
+            return cached
+    except Exception:
+        pass
+    return {"synced": False}
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
 _PROJECTS = Path.home() / ".claude" / "projects"
@@ -105,14 +215,19 @@ def read_stats():
         last_ts = entries[-1][0]
         d = _aggregate(entries, last_ts - timedelta(hours=5))
 
-    # 세션 잔여 시간
-    mins = 0
+    # 세션 잔여 시간 (로컬 계산 기본값)
+    local_mins = 0
     if d["first_ts"]:
-        mins = max(0, int((5*3600 - (now - d["first_ts"]).total_seconds()) / 60))
+        local_mins = max(0, int((5*3600 - (now - d["first_ts"]).total_seconds()) / 60))
 
     limit = 150_000
     total = d["inp"] + d["out"]
-    pct   = round(total / limit * 100, 1)
+
+    # Claude 앱 실시간 동기화
+    live = _get_live()
+    synced = live.get("synced", False)
+    pct  = live["pct"]        if synced else round(total / limit * 100, 1)
+    mins = live["reset_mins"] if (synced and live.get("reset_mins") is not None) else local_mins
 
     h, m  = divmod(mins, 60)
     time_str = f"{h}h {m}m" if h > 0 else (f"{m}m" if m > 0 else "—")
@@ -131,7 +246,7 @@ def read_stats():
         )
 
     return dict(
-        pct=pct,
+        pct=pct, synced=synced,
         total_exact=_fmt_exact(total),
         limit_exact=_fmt_exact(limit),
         inp=_fmt(d["inp"]), out=_fmt(d["out"]), cache=_fmt(d["cw"]+d["cr"]),
@@ -207,7 +322,7 @@ button{{background:none;border:none;cursor:pointer;font-family:inherit;font-size
 <div class="header">
   <span class="hdr-icon">☁️</span>
   <span class="hdr-title">Claude Code</span>
-  <span class="badge">Max 5x</span>
+  <span class="badge" id="badge">{'claude.ai' if d['synced'] else 'Local'}</span>
 </div>
 <div class="divider"></div>
 <div class="main">
@@ -257,6 +372,7 @@ function updateData(d){{
   document.getElementById('colI').textContent=d.inp;
   document.getElementById('colO').textContent=d.out;
   document.getElementById('colC').textContent=d.cache;
+  document.getElementById('badge').textContent=d.synced?'claude.ai':'Local';
   document.getElementById('btnR').disabled=false;
   document.getElementById('btnR').innerHTML='Refresh';
 }}
@@ -362,10 +478,11 @@ class AppDelegate(NSObject):
                     AppKit.NSMakeRange(idx, len(pct_s)))
             self.statusItem.button().setAttributedTitle_(astr)
 
+            synced_js = "true" if d["synced"] else "false"
             js = (f"updateData({{"
                   f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
                   f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
-                  f"time:'{d['time']}',mins:{mins}}});")
+                  f"time:'{d['time']}',mins:{mins},synced:{synced_js}}});")
             self.webView.evaluateJavaScript_completionHandler_(js, None)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_update)
