@@ -353,6 +353,7 @@ function onRefresh(){{
 }}
 function onReconnect(){{window.webkit.messageHandlers.cb.postMessage('reconnect')}}
 function onQuit(){{window.webkit.messageHandlers.cb.postMessage('quit')}}
+document.addEventListener('contextmenu',e=>e.preventDefault());
 let _m={d['mins']};
 setInterval(()=>{{
   if(_m<=0)return;_m--;
