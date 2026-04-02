@@ -84,33 +84,21 @@ def _fetch_claude_usage():
                 with urllib.request.urlopen(req2, timeout=5) as r:
                     data = json.loads(r.read())
 
-                pct = None
+                # Parse known structure: {"five_hour": {"utilization": 18.0, "resets_at": "..."}}
+                five = data.get("five_hour") or {}
+                pct = five.get("utilization")
                 reset_mins = None
-
-                def _search(obj, depth=0):
-                    nonlocal pct, reset_mins
-                    if depth > 8: return
-                    if isinstance(obj, dict):
-                        for k, v in obj.items():
-                            lk = k.lower()
-                            if pct is None and isinstance(v, (int, float)) and 0 <= v <= 100:
-                                if any(x in lk for x in ("percent", "ratio", "fraction")):
-                                    pct = float(v) * (100 if v <= 1 else 1)
-                            if reset_mins is None and "reset" in lk and isinstance(v, str):
-                                try:
-                                    ts = datetime.fromisoformat(v.replace("Z", "+00:00"))
-                                    diff = (ts - datetime.now(timezone.utc)).total_seconds()
-                                    if diff > 0:
-                                        reset_mins = int(diff / 60)
-                                except Exception:
-                                    pass
-                            _search(v, depth + 1)
-                    elif isinstance(obj, list):
-                        for item in obj: _search(item, depth + 1)
-
-                _search(data)
+                resets_at = five.get("resets_at")
+                if resets_at:
+                    try:
+                        ts = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
+                        diff = (ts - datetime.now(timezone.utc)).total_seconds()
+                        if diff > 0:
+                            reset_mins = int(diff / 60)
+                    except Exception:
+                        pass
                 if pct is not None:
-                    return {"pct": round(pct, 1), "reset_mins": reset_mins, "_raw": str(data)[:200]}
+                    return {"pct": round(float(pct), 1), "reset_mins": reset_mins}
             except Exception:
                 continue
         return None
