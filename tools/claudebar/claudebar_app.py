@@ -5,7 +5,7 @@ ClaudeBar — macOS status bar app (NSPopover + WKWebView)
 Install:  pip install pyobjc
 Run:      python3 claudebar_app.py
 """
-import sys, os, json, ssl, fcntl, threading, time, urllib.request
+import sys, os, json, fcntl, threading, time, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -14,18 +14,10 @@ _LOCK_FILE = open(Path.home() / ".claudebar.lock", "w")
 try:
     fcntl.flock(_LOCK_FILE, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except IOError:
-    sys.exit(0)   # already running — silently exit
-
-# ── SSL fix (Python.org build on macOS needs this) ────────────────────────────
-_SSL_CTX = ssl.create_default_context()
-try:
-    import certifi
-    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
-except ImportError:
-    pass
+    sys.exit(0)
 
 def _urlopen(req, timeout=5):
-    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 try:
     import AppKit, WebKit, objc
@@ -65,80 +57,13 @@ def _fmt_exact(n):  # 51,881
 
 # ── claude.ai usage sync ─────────────────────────────────────────────────────
 _LIVE_CACHE   = Path.home() / ".claudebar_live.json"
-_SESSION_FILE = Path.home() / ".claudebar_session"  # fallback: manually saved key
-_COOKIE_DB    = Path.home() / "Library/Application Support/Claude/Cookies"
-
-def _session_key_from_app():
-    """
-    Read sessionKey directly from Claude desktop app's Electron SQLite cookie store.
-    Decrypts using the AES key stored in macOS Keychain (one-time 'Always Allow' prompt).
-    Returns the sessionKey string or None.
-    """
-    import sqlite3, shutil, tempfile, hashlib
-    if not _COOKIE_DB.exists():
-        return None
-    try:
-        from Security import SecKeychainFindGenericPassword
-        # Claude desktop app stores its cookie encryption key under these service names
-        aes_password = None
-        for service in ["Claude Keys", "Claude Safe Storage", "Electron Keys"]:
-            try:
-                status, _, pwd_len, pwd_data = SecKeychainFindGenericPassword(
-                    None, len(service), service, len(service.split()[0]), service.split()[0])
-                if status == 0 and pwd_data:
-                    aes_password = bytes(pwd_data)
-                    break
-            except Exception:
-                continue
-        if not aes_password:
-            return None
-
-        from Cryptodome.Cipher import AES
-        key = hashlib.pbkdf2_hmac("sha1", aes_password, b"saltysalt", 1003, dklen=16)
-        iv  = b" " * 16
-
-        def decrypt(enc):
-            if not enc or not enc.startswith(b"v10"):
-                return None
-            raw = enc[3:]
-            pad = 16 - (len(raw) % 16)
-            if pad != 16: raw += b"\x00" * pad
-            dec = AES.new(key, AES.MODE_CBC, iv).decrypt(raw)
-            p = dec[-1]
-            try: return dec[:-p].decode("utf-8")
-            except: return None
-
-        tmp = tempfile.mktemp(suffix=".db")
-        shutil.copy2(str(_COOKIE_DB), tmp)
-        conn = sqlite3.connect(tmp)
-        rows = conn.execute(
-            "SELECT name, encrypted_value FROM cookies "
-            "WHERE host_key LIKE '%claude.ai%' AND name='sessionKey'"
-        ).fetchall()
-        conn.close()
-        Path(tmp).unlink(missing_ok=True)
-
-        for name, enc_val in rows:
-            val = decrypt(bytes(enc_val) if enc_val else b"")
-            if val:
-                return val
-    except Exception:
-        pass
-    return None
-
-def _get_session_key():
-    """Get session key: try Claude app keychain first, then manual file."""
-    key = _session_key_from_app()
-    if key:
-        return key
-    if _SESSION_FILE.exists():
-        k = _SESSION_FILE.read_text().strip()
-        return k if k else None
-    return None
+_SESSION_FILE = Path.home() / ".claudebar_session"
 
 def _fetch_claude_usage():
-    """Fetch real usage from claude.ai. Returns dict or None."""
-    session_key = _get_session_key()
+    """Fetch real usage from claude.ai using sessionKey file. Returns dict or None."""
+    if not _SESSION_FILE.exists():
+        return None
+    session_key = _SESSION_FILE.read_text().strip()
     if not session_key:
         return None
     try:
