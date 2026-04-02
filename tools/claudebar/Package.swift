@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "ClaudeBar",
-            path: "Sources/ClaudeBar"
+            path: "Sources/ClaudeBar",
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"])
+            ]
         )
     ]
 )
