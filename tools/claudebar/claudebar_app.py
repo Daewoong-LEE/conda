@@ -119,17 +119,6 @@ def _get_live():
     except Exception:
         pass
     return {"synced": False}
-        now_ts = datetime.now().timestamp()
-        cached = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
-        if now_ts - cached.get("ts", 0) > 60:
-            result = _fetch_claude_usage()
-            cached = {"ts": now_ts, **(result or {}), "synced": result is not None}
-            _LIVE_CACHE.write_text(json.dumps(cached))
-        if cached.get("synced"):
-            return cached
-    except Exception:
-        pass
-    return {"synced": False}
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
 _PROJECTS = Path.home() / ".claude" / "projects"
