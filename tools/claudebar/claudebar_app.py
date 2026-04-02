@@ -5,9 +5,27 @@ ClaudeBar — macOS status bar app (NSPopover + WKWebView)
 Install:  pip install pyobjc
 Run:      python3 claudebar_app.py
 """
-import sys, json, threading, time, urllib.request
+import sys, os, json, ssl, fcntl, threading, time, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+# ── Single-instance lock ──────────────────────────────────────────────────────
+_LOCK_FILE = open(Path.home() / ".claudebar.lock", "w")
+try:
+    fcntl.flock(_LOCK_FILE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except IOError:
+    sys.exit(0)   # already running — silently exit
+
+# ── SSL fix (Python.org build on macOS needs this) ────────────────────────────
+_SSL_CTX = ssl.create_default_context()
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    pass
+
+def _urlopen(req, timeout=5):
+    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX)
 
 try:
     import AppKit, WebKit, objc
@@ -67,40 +85,32 @@ def _fetch_claude_usage():
 
         # Step 1: get org UUID
         req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with _urlopen(req) as r:
             orgs = json.loads(r.read())
         if not orgs:
             return None
         org_id = orgs[0]["uuid"]
 
-        # Step 2: try known usage/rate_limit endpoints
-        for path in [
-            f"/api/organizations/{org_id}/rate_limits",
-            f"/api/organizations/{org_id}/usage",
-            f"/api/organizations/{org_id}/limits",
-        ]:
-            try:
-                req2 = urllib.request.Request(f"https://claude.ai{path}", headers=headers)
-                with urllib.request.urlopen(req2, timeout=5) as r:
-                    data = json.loads(r.read())
+        # Step 2: fetch usage  {"five_hour": {"utilization": 18.0, "resets_at": "..."}}
+        req2 = urllib.request.Request(
+            f"https://claude.ai/api/organizations/{org_id}/usage", headers=headers)
+        with _urlopen(req2) as r:
+            data = json.loads(r.read())
 
-                # Parse known structure: {"five_hour": {"utilization": 18.0, "resets_at": "..."}}
-                five = data.get("five_hour") or {}
-                pct = five.get("utilization")
-                reset_mins = None
-                resets_at = five.get("resets_at")
-                if resets_at:
-                    try:
-                        ts = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
-                        diff = (ts - datetime.now(timezone.utc)).total_seconds()
-                        if diff > 0:
-                            reset_mins = int(diff / 60)
-                    except Exception:
-                        pass
-                if pct is not None:
-                    return {"pct": round(float(pct), 1), "reset_mins": reset_mins}
+        five = data.get("five_hour") or {}
+        pct  = five.get("utilization")
+        reset_mins = None
+        resets_at  = five.get("resets_at")
+        if resets_at:
+            try:
+                ts   = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
+                diff = (ts - datetime.now(timezone.utc)).total_seconds()
+                if diff > 0:
+                    reset_mins = int(diff / 60)
             except Exception:
-                continue
+                pass
+        if pct is not None:
+            return {"pct": round(float(pct), 1), "reset_mins": reset_mins}
         return None
     except Exception:
         return None
