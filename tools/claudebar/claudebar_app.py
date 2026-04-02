@@ -279,7 +279,7 @@ body{{
 .model-cost{{color:#32d74b;font-family:Arial,monospace;font-size:11px}}
 
 /* Footer */
-.footer{{display:flex;justify-content:space-between;align-items:center;padding:8px 14px}}
+.footer{{display:flex;justify-content:space-between;align-items:center;padding:4px 14px}}
 button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;font-size:15px;font-weight:500;padding:3px 8px;border-radius:7px;transition:background .12s}}
 .btn-r{{color:#4a9eff}}.btn-r:hover{{background:rgba(74,158,255,.15)}}
 .btn-s{{color:#ff9f0a}}.btn-s:hover{{background:rgba(255,159,10,.15)}}
