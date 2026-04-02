@@ -290,6 +290,7 @@ body{{
 .footer{{display:flex;justify-content:space-between;align-items:center;padding:8px 14px}}
 button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;font-size:15px;font-weight:500;padding:3px 8px;border-radius:7px;transition:background .12s}}
 .btn-r{{color:#4a9eff}}.btn-r:hover{{background:rgba(74,158,255,.15)}}
+.btn-s{{color:#ff9f0a}}.btn-s:hover{{background:rgba(255,159,10,.15)}}
 .btn-q{{color:rgba(255,255,255,.75)}}.btn-q:hover{{background:rgba(255,255,255,.1)}}
 .spin{{display:inline-block;animation:spin 1s linear infinite}}
 @keyframes spin{{to{{transform:rotate(360deg)}}}}
@@ -332,6 +333,7 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
 <div class="divider"></div>
 <div class="footer">
   <button class="btn-r" id="btnR" onclick="onRefresh()">Refresh</button>
+  {'<button class="btn-s" onclick="onReconnect()">🔑 재연결</button>' if not d['synced'] else ''}
   <button class="btn-q" onclick="onQuit()">Quit</button>
 </div>
 
@@ -357,6 +359,7 @@ function onRefresh(){{
   document.getElementById('btnR').innerHTML='<span class=spin>↻</span>';
   window.webkit.messageHandlers.cb.postMessage('refresh');
 }}
+function onReconnect(){{window.webkit.messageHandlers.cb.postMessage('reconnect')}}
 function onQuit(){{window.webkit.messageHandlers.cb.postMessage('quit')}}
 let _m={d['mins']};
 setInterval(()=>{{
@@ -416,6 +419,13 @@ class AppDelegate(NSObject):
     def userContentController_didReceiveScriptMessage_(self, _, msg):
         if msg.body() == "refresh":
             threading.Thread(target=self._refresh, daemon=True).start()
+        elif msg.body() == "reconnect":
+            import subprocess, os
+            script = str(Path(__file__).parent / "debug.py")
+            subprocess.Popen([
+                "osascript", "-e",
+                f'tell application "Terminal" to do script "python3 {script}"'
+            ])
         elif msg.body() == "quit":
             AppKit.NSApp.terminate_(None)
 
