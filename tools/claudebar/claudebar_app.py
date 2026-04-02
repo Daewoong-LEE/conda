@@ -196,6 +196,9 @@ def read_stats():
     pct  = live["pct"]        if synced else round(total / limit * 100, 1)
     mins = live["reset_mins"] if (synced and live.get("reset_mins") is not None) else local_mins
 
+    # 토큰 수: 동기화 시 API % 역산, 아니면 로컬 집계
+    display_total = _fmt_exact(round(limit * pct / 100)) if synced else _fmt_exact(total)
+
     h, m  = divmod(mins, 60)
     time_str = f"{h}h {m}m" if h > 0 else (f"{m}m" if m > 0 else "—")
 
@@ -214,7 +217,7 @@ def read_stats():
 
     return dict(
         pct=pct, synced=synced,
-        total_exact=_fmt_exact(total),
+        total_exact=display_total,
         limit_exact=_fmt_exact(limit),
         inp=_fmt(d["inp"]), out=_fmt(d["out"]), cache=_fmt(d["cw"]+d["cr"]),
         cost=f"${d['cost']:.3f}",
@@ -299,7 +302,7 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
   <div>
     <div class="row">
       <span class="label">Token Usage</span>
-      <span class="nums" id="nums">{'claude.ai 기준' if d['synced'] else f"{d['total_exact']} / {d['limit_exact']}"}</span>
+      <span class="nums" id="nums">{d['total_exact']} / {d['limit_exact']}</span>
     </div>
     <div class="track"><div class="fill" id="fill" style="width:{d['pct']}%"></div></div>
     <div class="big-pct" id="bigPct" style="color:{('#32d74b' if d['pct']<60 else '#ff9f0a' if d['pct']<85 else '#ff453a')}">{d['pct']}% used</div>
@@ -337,7 +340,7 @@ function updateData(d){{
   document.getElementById('fill').style.background=c;
   document.getElementById('bigPct').textContent=d.pct+'% used';
   document.getElementById('bigPct').style.color=c;
-  document.getElementById('nums').textContent=d.synced?'claude.ai 기준':d.total+' / '+d.limit;
+  document.getElementById('nums').textContent=d.total+' / '+d.limit;
   document.getElementById('bigTime').textContent=d.time;
   document.getElementById('colI').textContent=d.inp;
   document.getElementById('colO').textContent=d.out;
