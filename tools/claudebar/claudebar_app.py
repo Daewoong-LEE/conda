@@ -237,59 +237,59 @@ def _build_html(d):
 *{{box-sizing:border-box;margin:0;padding:0}}
 html,body{{
   width:340px;
-  font-family:-apple-system,"SF Pro Display","Helvetica Neue",sans-serif;
-  background:linear-gradient(170deg,#3d90d8 0%,#2f7dc4 40%,#2570b5 100%);
+  font-family:Arial,sans-serif;
+  background:#3a3a3a;
   color:#fff;user-select:none;-webkit-user-select:none;overflow:hidden;
 }}
-.divider{{height:1px;background:rgba(255,255,255,.2)}}
+.divider{{height:1px;background:rgba(255,255,255,.15)}}
 
 /* Header */
-.header{{display:flex;align-items:center;gap:10px;padding:15px 16px}}
-.hdr-icon{{font-size:22px}}
+.header{{display:flex;align-items:center;gap:8px;padding:9px 14px}}
+.hdr-icon{{font-size:18px}}
 .hdr-title{{font-size:18px;font-weight:700;flex:1}}
 .badge{{
   font-size:13px;font-weight:500;color:rgba(255,255,255,.9);
-  background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);
-  padding:4px 12px;border-radius:9px
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);
+  padding:3px 10px;border-radius:9px
 }}
 
 /* Main */
-.main{{padding:18px 16px;display:flex;flex-direction:column;gap:16px}}
+.main{{padding:10px 14px;display:flex;flex-direction:column;gap:9px}}
 .row{{display:flex;justify-content:space-between;align-items:baseline}}
 .label{{font-size:14px;font-weight:600;color:rgba(255,255,255,.9)}}
-.nums{{font-size:14px;color:rgba(255,255,255,.75)}}
+.nums{{font-size:14px;color:rgba(255,255,255,.6)}}
 
 /* Progress bar */
-.track{{height:10px;background:rgba(255,255,255,.2);border-radius:999px;overflow:hidden;margin-top:10px}}
+.track{{height:8px;background:rgba(255,255,255,.15);border-radius:999px;overflow:hidden;margin-top:7px}}
 .fill{{height:100%;border-radius:999px;background:#32d74b;transition:width .5s cubic-bezier(.4,0,.2,1)}}
 
 /* Big % */
-.big-pct{{font-size:38px;font-weight:800;letter-spacing:-1.5px;line-height:1;margin-top:10px;color:#32d74b}}
+.big-pct{{font-size:38px;font-weight:800;letter-spacing:-1.5px;line-height:1;margin-top:7px;color:#32d74b}}
 
 /* Session time */
 .time-row{{display:flex;align-items:baseline;gap:8px}}
 .big-time{{font-size:28px;font-weight:700;letter-spacing:-.5px}}
-.window{{font-size:15px;color:rgba(255,255,255,.6)}}
+.window{{font-size:15px;color:rgba(255,255,255,.5)}}
 
 /* Three columns */
 .cols{{display:flex}}
 .col{{flex:1}}
-.col-title{{font-size:14px;font-weight:600;margin-bottom:6px}}
-.col-val{{font-size:18px;font-weight:600;font-family:"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}}
+.col-title{{font-size:14px;font-weight:600;margin-bottom:4px}}
+.col-val{{font-size:18px;font-weight:600;font-family:Arial,monospace;font-variant-numeric:tabular-nums}}
 .cyan{{color:#5ac8fa}}.pink{{color:#ff6ec7}}.green{{color:#32d74b}}
 
 /* Models */
-.models-hdr{{font-size:11px;font-weight:600;opacity:.55;letter-spacing:.5px;text-transform:uppercase;margin-bottom:5px}}
-.model-row{{display:flex;gap:6px;margin-bottom:3px}}
-.model-name{{flex:1;color:rgba(255,255,255,.8);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-.model-tok{{color:rgba(255,255,255,.55);font-family:"SF Mono",monospace;font-size:11px}}
-.model-cost{{color:#32d74b;font-family:"SF Mono",monospace;font-size:11px}}
+.models-hdr{{font-size:11px;font-weight:600;opacity:.45;letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px}}
+.model-row{{display:flex;gap:6px;margin-bottom:2px}}
+.model-name{{flex:1;color:rgba(255,255,255,.75);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.model-tok{{color:rgba(255,255,255,.45);font-family:Arial,monospace;font-size:11px}}
+.model-cost{{color:#32d74b;font-family:Arial,monospace;font-size:11px}}
 
 /* Footer */
-.footer{{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}}
-button{{background:none;border:none;cursor:pointer;font-family:inherit;font-size:15px;font-weight:500;padding:4px 8px;border-radius:7px;transition:background .12s}}
+.footer{{display:flex;justify-content:space-between;align-items:center;padding:8px 14px}}
+button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;font-size:15px;font-weight:500;padding:3px 8px;border-radius:7px;transition:background .12s}}
 .btn-r{{color:#4a9eff}}.btn-r:hover{{background:rgba(74,158,255,.15)}}
-.btn-q{{color:rgba(255,255,255,.85)}}.btn-q:hover{{background:rgba(255,255,255,.1)}}
+.btn-q{{color:rgba(255,255,255,.75)}}.btn-q:hover{{background:rgba(255,255,255,.1)}}
 .spin{{display:inline-block;animation:spin 1s linear infinite}}
 @keyframes spin{{to{{transform:rotate(360deg)}}}}
 </style></head><body>
@@ -312,7 +312,7 @@ button{{background:none;border:none;cursor:pointer;font-family:inherit;font-size
   </div>
 
   <div>
-    <div class="label" style="margin-bottom:8px">Session Time Remaining</div>
+    <div class="label" style="margin-bottom:4px">Session Time Remaining</div>
     <div class="time-row">
       <span class="big-time" id="bigTime">{d['time']}</span>
       <span class="window">of 5h window</span>
@@ -394,12 +394,12 @@ class AppDelegate(NSObject):
         cfg = WebKit.WKWebViewConfiguration.alloc().init()
         cfg.userContentController().addScriptMessageHandler_name_(self, "cb")
         self.webView = (WebKit.WKWebView.alloc()
-                        .initWithFrame_configuration_(NSMakeRect(0,0,340,490), cfg))
+                        .initWithFrame_configuration_(NSMakeRect(0,0,340,330), cfg))
         self.webView.loadHTMLString_baseURL_(_build_html(d), None)
         vc = AppKit.NSViewController.alloc().init()
         vc.setView_(self.webView)
         self.popover = AppKit.NSPopover.alloc().init()
-        self.popover.setContentSize_(NSMakeSize(340, 490))
+        self.popover.setContentSize_(NSMakeSize(340, 330))
         self.popover.setContentViewController_(vc)
         self.popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
 
