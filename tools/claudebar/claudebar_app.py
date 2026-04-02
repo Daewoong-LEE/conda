@@ -90,7 +90,9 @@ def _fetch_claude_usage():
             data = json.loads(r.read())
 
         five = data.get("five_hour") or {}
+        seven = data.get("seven_day") or {}
         pct  = five.get("utilization")
+        week_pct = seven.get("utilization") or 0.0
         reset_mins = None
         resets_at  = five.get("resets_at")
         if resets_at:
@@ -102,7 +104,7 @@ def _fetch_claude_usage():
             except Exception:
                 pass
         if pct is not None:
-            return {"pct": round(float(pct), 1), "reset_mins": reset_mins}
+            return {"pct": round(float(pct), 1), "reset_mins": reset_mins, "week_pct": round(float(week_pct), 1)}
         return None
     except Exception:
         return None
@@ -192,9 +194,10 @@ def read_stats():
 
     # Claude 앱 실시간 동기화
     live = _get_live()
-    synced = live.get("synced", False)
-    pct  = live["pct"]        if synced else round(total / limit * 100, 1)
-    mins = live["reset_mins"] if (synced and live.get("reset_mins") is not None) else local_mins
+    synced   = live.get("synced", False)
+    pct      = live["pct"]        if synced else round(total / limit * 100, 1)
+    mins     = live["reset_mins"] if (synced and live.get("reset_mins") is not None) else local_mins
+    week_pct = live.get("week_pct", 0.0) if synced else 0.0
 
     # 토큰 수: 동기화 시 API % 역산, 아니면 로컬 집계
     display_total = _fmt_exact(round(limit * pct / 100)) if synced else _fmt_exact(total)
@@ -216,7 +219,7 @@ def read_stats():
         )
 
     return dict(
-        pct=pct, synced=synced,
+        pct=pct, synced=synced, week_pct=week_pct,
         total_exact=display_total,
         limit_exact=_fmt_exact(limit),
         inp=_fmt(d["inp"]), out=_fmt(d["out"]), cache=_fmt(d["cw"]+d["cr"]),
@@ -315,13 +318,14 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
     </div>
   </div>
 
-  <div class="cols">
-    <div class="col"><div class="col-title">Input</div><div class="col-val cyan"  id="colI">{d['inp']}</div></div>
-    <div class="col"><div class="col-title">Output</div><div class="col-val pink" id="colO">{d['out']}</div></div>
-    <div class="col"><div class="col-title">Cache</div><div class="col-val green" id="colC">{d['cache']}</div></div>
+  <div>
+    <div class="row">
+      <span class="label">Weekly Usage</span>
+      <span class="nums" id="weekNums">{d['week_pct']}%</span>
+    </div>
+    <div class="track"><div class="fill" id="weekFill" style="width:{d['week_pct']}%;background:#4a9eff"></div></div>
+    <div style="font-size:12px;color:rgba(255,255,255,.45);margin-top:4px">7일 누적 사용량</div>
   </div>
-
-  {'<div><div class="models-hdr">모델별</div>' + d['models_rows'] + '</div>' if d['models_rows'] else ''}
 
 </div>
 <div class="divider"></div>
@@ -341,9 +345,8 @@ function updateData(d){{
   document.getElementById('bigPct').style.color=c;
   document.getElementById('nums').textContent=d.total+' / '+d.limit;
   document.getElementById('bigTime').textContent=d.time;
-  document.getElementById('colI').textContent=d.inp;
-  document.getElementById('colO').textContent=d.out;
-  document.getElementById('colC').textContent=d.cache;
+  document.getElementById('weekFill').style.width=d.week_pct+'%';
+  document.getElementById('weekNums').textContent=d.week_pct+'%';
   document.getElementById('badge').textContent=d.synced?'claude.ai':'Local';
   document.getElementById('btnR').disabled=false;
   document.getElementById('btnR').innerHTML='Refresh';
@@ -462,7 +465,7 @@ class AppDelegate(NSObject):
             synced_js = "true" if d["synced"] else "false"
             js = (f"updateData({{"
                   f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
-                  f"inp:'{d['inp']}',out:'{d['out']}',cache:'{d['cache']}',"
+                  f"week_pct:{d['week_pct']},"
                   f"time:'{d['time']}',mins:{mins},synced:{synced_js}}});")
             self.webView.evaluateJavaScript_completionHandler_(js, None)
 
