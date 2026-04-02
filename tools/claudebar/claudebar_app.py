@@ -299,7 +299,7 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
   <div>
     <div class="row">
       <span class="label">Token Usage</span>
-      <span class="nums" id="nums">{d['total_exact']} / {d['limit_exact']}</span>
+      <span class="nums" id="nums">{'claude.ai 기준' if d['synced'] else f"{d['total_exact']} / {d['limit_exact']}"}</span>
     </div>
     <div class="track"><div class="fill" id="fill" style="width:{d['pct']}%"></div></div>
     <div class="big-pct" id="bigPct" style="color:{('#32d74b' if d['pct']<60 else '#ff9f0a' if d['pct']<85 else '#ff453a')}">{d['pct']}% used</div>
@@ -337,7 +337,7 @@ function updateData(d){{
   document.getElementById('fill').style.background=c;
   document.getElementById('bigPct').textContent=d.pct+'% used';
   document.getElementById('bigPct').style.color=c;
-  document.getElementById('nums').textContent=d.total+' / '+d.limit;
+  document.getElementById('nums').textContent=d.synced?'claude.ai 기준':d.total+' / '+d.limit;
   document.getElementById('bigTime').textContent=d.time;
   document.getElementById('colI').textContent=d.inp;
   document.getElementById('colO').textContent=d.out;
