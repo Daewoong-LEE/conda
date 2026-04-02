@@ -235,8 +235,9 @@ def _build_html(d):
     return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{
-  width:340px;
+html{{height:100%;background:#3a3a3a}}
+body{{
+  width:340px;min-height:100%;
   font-family:Arial,sans-serif;
   background:#3a3a3a;
   color:#fff;user-select:none;-webkit-user-select:none;overflow:hidden;
