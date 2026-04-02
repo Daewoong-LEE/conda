@@ -1,83 +1,75 @@
 #!/usr/bin/env python3
-"""ClaudeBar 동기화 진단 스크립트"""
-import json, sqlite3, shutil, tempfile, hashlib, urllib.request
+"""ClaudeBar 동기화 진단 / sessionKey 설정 도우미"""
+import json, urllib.request, sys
 from pathlib import Path
 
-COOKIE_DB = Path.home() / "Library/Application Support/Claude/Cookies"
+SESSION_FILE = Path.home() / ".claudebar_session"
 
-def _try_decrypt(enc_val):
-    """Try decrypting Electron cookie with 'peanuts' password (no keychain)."""
-    if not enc_val or not enc_val.startswith(b"v10"):
-        return None
-    try:
-        from Cryptodome.Cipher import AES
-        key = hashlib.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1003, dklen=16)
-        iv  = b" " * 16
-        raw = enc_val[3:]
-        # Pad to 16-byte boundary
-        pad_len = 16 - (len(raw) % 16)
-        if pad_len != 16:
-            raw += b"\x00" * pad_len
-        decrypted = AES.new(key, AES.MODE_CBC, iv).decrypt(raw)
-        pad = decrypted[-1]
-        result = decrypted[:-pad].decode("utf-8", errors="ignore")
-        return result if result.isprintable() and len(result) > 2 else None
-    except Exception as e:
-        return None
+def test_session(session_key):
+    cookie_str = f"sessionKey={session_key}"
+    headers = {
+        "Cookie": cookie_str,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    print("  org 정보 가져오는 중...")
+    req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as r:
+        orgs = json.loads(r.read())
+    if not orgs:
+        print("  ❌ 로그인 실패 — sessionKey가 올바른지 확인하세요")
+        return
 
-print("=== 1. 쿠키 DB 암호화 확인 ===")
-if not COOKIE_DB.exists():
-    print(f"  ❌ 파일 없음: {COOKIE_DB}")
-else:
-    tmp = tempfile.mktemp(suffix=".db")
-    shutil.copy2(str(COOKIE_DB), tmp)
-    conn = sqlite3.connect(tmp)
-    rows = conn.execute(
-        "SELECT host_key, name, value, encrypted_value FROM cookies WHERE host_key LIKE '%claude.ai%'"
-    ).fetchall()
-    conn.close()
-    Path(tmp).unlink()
+    org_id = orgs[0]["uuid"]
+    print(f"  ✅ 로그인 성공! org_id = {org_id}")
 
-    decrypted_cookies = {}
-    for host, name, value, enc_val in rows:
-        if value:
-            decrypted_cookies[name] = value
-        elif enc_val:
-            dec = _try_decrypt(enc_val)
-            if dec:
-                decrypted_cookies[name] = dec
-                print(f"  ✅ 복호화 성공: {name} = {dec[:40]}")
-            else:
-                print(f"  🔒 복호화 실패 (키체인 필요): {name}")
-
-    print(f"\n  복호화된 쿠키: {len(decrypted_cookies)}개")
-
-    if decrypted_cookies:
-        cookie_str = "; ".join(f"{k}={v}" for k,v in decrypted_cookies.items())
-        print("\n=== 2. claude.ai API 테스트 ===")
+    for path in [
+        f"/api/organizations/{org_id}/rate_limits",
+        f"/api/organizations/{org_id}/usage",
+        f"/api/organizations/{org_id}/limits",
+    ]:
         try:
-            req = urllib.request.Request(
-                "https://claude.ai/api/organizations",
-                headers={"Cookie": cookie_str, "Accept": "application/json",
-                         "User-Agent": "Mozilla/5.0"},
-            )
-            with urllib.request.urlopen(req, timeout=5) as r:
+            req2 = urllib.request.Request(f"https://claude.ai{path}", headers=headers)
+            with urllib.request.urlopen(req2, timeout=5) as r:
                 data = json.loads(r.read())
-            print(f"  ✅ 응답: {json.dumps(data)[:300]}")
+            print(f"\n  ✅ {path}")
+            print(f"  {json.dumps(data, indent=2)[:500]}")
         except Exception as e:
-            print(f"  ❌ 오류: {e}")
-    else:
-        print("\n=== 2. 키체인 없이 접근 불가 ===")
-        print("  모든 쿠키가 macOS 키체인으로 암호화되어 있습니다.")
-        print("  다른 방법을 시도합니다...")
+            print(f"  ❌ {path}: {e}")
 
-        # Try ~/.claude/ for any stored tokens
-        print("\n=== 3. ~/.claude/ 인증 토큰 확인 ===")
-        claude_dir = Path.home() / ".claude"
-        for f in claude_dir.glob("*.json"):
+if __name__ == "__main__":
+    print("=== ClaudeBar 세션 키 설정 ===\n")
+    print("1. Chrome에서 claude.ai 열기")
+    print("2. 우클릭 → 검사(Inspect) → Application 탭 → Cookies → https://claude.ai")
+    print("3. 'sessionKey' 항목의 Value 복사")
+    print("4. 아래에 붙여넣기 후 엔터\n")
+
+    if SESSION_FILE.exists():
+        existing = SESSION_FILE.read_text().strip()
+        print(f"현재 저장된 키: {existing[:20]}...")
+        ans = input("다시 입력? (y/N): ").strip().lower()
+        if ans != "y":
+            print("\n기존 키로 테스트합니다...")
             try:
-                content = json.loads(f.read_text())
-                print(f"  {f.name}: {str(content)[:200]}")
-            except:
-                pass
+                test_session(existing)
+            except Exception as e:
+                print(f"  ❌ 오류: {e}")
+            sys.exit(0)
 
+    key = input("sessionKey 값 붙여넣기: ").strip()
+    if not key:
+        print("입력 없음, 종료")
+        sys.exit(1)
+
+    print(f"\n테스트 중...")
+    try:
+        test_session(key)
+        SESSION_FILE.write_text(key)
+        print(f"\n✅ 저장 완료: {SESSION_FILE}")
+        print("ClaudeBar가 자동으로 동기화를 시작합니다 (1분 이내)")
+        # Clear cache to force refresh
+        cache = Path.home() / ".claudebar_live.json"
+        if cache.exists():
+            cache.unlink()
+    except Exception as e:
+        print(f"\n❌ 실패: {e}")

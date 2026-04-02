@@ -5,7 +5,7 @@ ClaudeBar — macOS status bar app (NSPopover + WKWebView)
 Install:  pip install pyobjc
 Run:      python3 claudebar_app.py
 """
-import sys, json, re, sqlite3, shutil, tempfile, threading, time, urllib.request
+import sys, json, threading, time, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -45,104 +45,92 @@ def _fmt(n):        # compact  2.4k / 23.2M
 def _fmt_exact(n):  # 51,881
     return f"{n:,}"
 
-# ── Claude desktop app usage (no keychain needed) ────────────────────────────
-_LIVE_CACHE = Path.home() / ".claudebar_live.json"
-# Electron stores cookies as plain SQLite — no keychain encryption
-_ELECTRON_COOKIES = Path.home() / "Library/Application Support/Claude/Cookies"
-
-def _read_electron_cookies():
-    """Read cookies from Claude desktop app's Electron SQLite store."""
-    if not _ELECTRON_COOKIES.exists():
-        return None
-    tmp = tempfile.mktemp(suffix=".db")
-    try:
-        shutil.copy2(str(_ELECTRON_COOKIES), tmp)
-        conn = sqlite3.connect(tmp)
-        rows = conn.execute(
-            "SELECT name, value FROM cookies WHERE host_key LIKE '%claude.ai%'"
-        ).fetchall()
-        conn.close()
-    except Exception:
-        return None
-    finally:
-        try: Path(tmp).unlink()
-        except: pass
-    # Skip encrypted values (start with 'v1') — means keychain is being used
-    pairs = [f"{n}={v}" for n, v in rows if v and not v.startswith("v1")]
-    return "; ".join(pairs) if pairs else None
+# ── claude.ai usage sync (via manually configured session key) ────────────────
+_LIVE_CACHE    = Path.home() / ".claudebar_live.json"
+_SESSION_FILE  = Path.home() / ".claudebar_session"   # user puts sessionKey here
 
 def _fetch_claude_usage():
-    """
-    Fetch real usage % and reset time from claude.ai using Claude desktop app cookies.
-    Returns dict with 'pct' and 'reset_mins', or None on failure.
-    """
+    """Fetch real usage from claude.ai using stored session key. Returns dict or None."""
+    if not _SESSION_FILE.exists():
+        return None
+    session_key = _SESSION_FILE.read_text().strip()
+    if not session_key:
+        return None
     try:
-        cookies = _read_electron_cookies()
-        if not cookies:
+        cookie_str = f"sessionKey={session_key}"
+        headers = {
+            "Cookie": cookie_str,
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        }
+
+        # Step 1: get org UUID
+        req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            orgs = json.loads(r.read())
+        if not orgs:
             return None
-        req = urllib.request.Request(
-            "https://claude.ai/api/organizations",
-            headers={
-                "Cookie": cookies,
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            orgs = json.loads(resp.read())
-        org_id = orgs[0]["uuid"] if orgs else None
-        if not org_id:
-            return None
+        org_id = orgs[0]["uuid"]
 
-        req2 = urllib.request.Request(
-            f"https://claude.ai/api/organizations/{org_id}/usage",
-            headers={
-                "Cookie": cookies,
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req2, timeout=5) as resp:
-            data = json.loads(resp.read())
+        # Step 2: try known usage/rate_limit endpoints
+        for path in [
+            f"/api/organizations/{org_id}/rate_limits",
+            f"/api/organizations/{org_id}/usage",
+            f"/api/organizations/{org_id}/limits",
+        ]:
+            try:
+                req2 = urllib.request.Request(f"https://claude.ai{path}", headers=headers)
+                with urllib.request.urlopen(req2, timeout=5) as r:
+                    data = json.loads(r.read())
 
-        # Find usage percent and reset time
-        pct = None
-        reset_mins = None
+                pct = None
+                reset_mins = None
 
-        def _search(obj, depth=0):
-            nonlocal pct, reset_mins
-            if depth > 8: return
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    lk = k.lower()
-                    if pct is None and ("percent" in lk or ("usage" in lk and isinstance(v, (int, float)))):
-                        if isinstance(v, (int, float)) and 0 <= v <= 100:
-                            pct = float(v)
-                    if reset_mins is None and "reset" in lk and isinstance(v, str):
-                        try:
-                            ts = datetime.fromisoformat(v.replace("Z", "+00:00"))
-                            diff = (ts - datetime.now(timezone.utc)).total_seconds()
-                            if diff > 0:
-                                reset_mins = int(diff / 60)
-                        except Exception:
-                            pass
-                    _search(v, depth + 1)
-            elif isinstance(obj, list):
-                for item in obj:
-                    _search(item, depth + 1)
+                def _search(obj, depth=0):
+                    nonlocal pct, reset_mins
+                    if depth > 8: return
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            lk = k.lower()
+                            if pct is None and isinstance(v, (int, float)) and 0 <= v <= 100:
+                                if any(x in lk for x in ("percent", "ratio", "fraction")):
+                                    pct = float(v) * (100 if v <= 1 else 1)
+                            if reset_mins is None and "reset" in lk and isinstance(v, str):
+                                try:
+                                    ts = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                                    diff = (ts - datetime.now(timezone.utc)).total_seconds()
+                                    if diff > 0:
+                                        reset_mins = int(diff / 60)
+                                except Exception:
+                                    pass
+                            _search(v, depth + 1)
+                    elif isinstance(obj, list):
+                        for item in obj: _search(item, depth + 1)
 
-        _search(data)
-        if pct is not None:
-            return {"pct": pct, "reset_mins": reset_mins}
+                _search(data)
+                if pct is not None:
+                    return {"pct": round(pct, 1), "reset_mins": reset_mins, "_raw": str(data)[:200]}
+            except Exception:
+                continue
         return None
     except Exception:
         return None
 
 def _get_live():
-    """Return live usage dict (pct, reset_mins, synced). Cached 60s."""
+    """Return live usage dict. Cached 60s."""
     try:
+        now_ts = datetime.now().timestamp()
+        cached = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
+        if now_ts - cached.get("ts", 0) > 60:
+            result = _fetch_claude_usage()
+            cached = {"ts": now_ts, **(result or {}), "synced": result is not None}
+            _LIVE_CACHE.write_text(json.dumps(cached))
+        if cached.get("synced"):
+            return cached
+    except Exception:
+        pass
+    return {"synced": False}
         now_ts = datetime.now().timestamp()
         cached = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
         if now_ts - cached.get("ts", 0) > 60:
