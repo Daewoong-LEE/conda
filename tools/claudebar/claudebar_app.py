@@ -321,10 +321,11 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
   <div style="margin-top:6px">
     <div class="row">
       <span class="label">Weekly Usage</span>
-      <span class="nums" id="weekNums">7일 누적사용량</span>
+      <span class="nums" id="weekNums"></span>
     </div>
     <div class="track" style="margin-top:7px"><div class="fill" id="weekFill" style="width:{d['week_pct']}%;background:#4a9eff"></div></div>
     <div style="font-size:22px;font-weight:700;color:#4a9eff;margin-top:6px" id="weekPct">{int(d['week_pct'])}%</div>
+    <div style="font-size:11px;color:rgba(255,255,255,.4);margin-top:2px">7일 누적사용량</div>
   </div>
 
 </div>
@@ -372,9 +373,11 @@ class AppDelegate(NSObject):
     statusItem = objc.ivar()
     popover    = objc.ivar()
     webView    = objc.ivar()
+    _is_synced = objc.ivar()
 
     def applicationDidFinishLaunching_(self, _):
         AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+        self._is_synced = False
         self._setup_bar()
         self._setup_popover()
         threading.Thread(target=self._poll, daemon=True).start()
@@ -406,6 +409,8 @@ class AppDelegate(NSObject):
         self.popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
 
     def click_(self, sender):
+        if not self._is_synced:
+            return
         if self.popover.isShown():
             self.popover.performClose_(sender)
         else:
@@ -439,14 +444,25 @@ class AppDelegate(NSObject):
 
         # Inline closure — avoids method-with-argument ObjC registration issue
         def _update():
-            pct  = d["pct"]
-            mins = d["mins"]
-            col  = (AppKit.NSColor.systemGreenColor()  if pct < 60 else
-                    AppKit.NSColor.systemOrangeColor() if pct < 85 else
-                    AppKit.NSColor.systemRedColor())
-            lbl  = f"☁ {pct}%{'  ·  '+str(mins)+'m' if mins else ''}"
-            astr = AppKit.NSMutableAttributedString.alloc().initWithString_(lbl)
-            fn   = AppKit.NSFont.menuBarFontOfSize_(13)
+            pct    = d["pct"]
+            mins   = d["mins"]
+            synced = d["synced"]
+            self._is_synced = synced
+
+            if not synced:
+                # 연결 안 됨 → 상태바에 "연결중" 표시, 팝업 닫기
+                self.statusItem.button().setTitle_("☁ 연결중...")
+                if self.popover.isShown():
+                    self.popover.performClose_(None)
+                return
+
+            col   = (AppKit.NSColor.systemGreenColor()  if pct < 60 else
+                     AppKit.NSColor.systemOrangeColor() if pct < 85 else
+                     AppKit.NSColor.systemRedColor())
+            ipct  = int(round(pct))
+            lbl   = f"☁ {ipct}%{'  ·  '+str(mins)+'m' if mins else ''}"
+            astr  = AppKit.NSMutableAttributedString.alloc().initWithString_(lbl)
+            fn    = AppKit.NSFont.menuBarFontOfSize_(13)
             astr.addAttribute_value_range_(
                 AppKit.NSForegroundColorAttributeName,
                 AppKit.NSColor.labelColor(),
@@ -454,7 +470,7 @@ class AppDelegate(NSObject):
             astr.addAttribute_value_range_(
                 AppKit.NSFontAttributeName, fn,
                 AppKit.NSMakeRange(0, len(lbl)))
-            pct_s = f"{pct}%"
+            pct_s = f"{ipct}%"
             idx   = lbl.find(pct_s)
             if idx >= 0:
                 astr.addAttribute_value_range_(
@@ -462,11 +478,10 @@ class AppDelegate(NSObject):
                     AppKit.NSMakeRange(idx, len(pct_s)))
             self.statusItem.button().setAttributedTitle_(astr)
 
-            synced_js = "true" if d["synced"] else "false"
             js = (f"updateData({{"
                   f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
                   f"week_pct:{d['week_pct']},"
-                  f"time:'{d['time']}',mins:{mins},synced:{synced_js}}});")
+                  f"time:'{d['time']}',mins:{mins},synced:true}});")
             self.webView.evaluateJavaScript_completionHandler_(js, None)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_update)
