@@ -285,7 +285,7 @@ body{{
 .model-cost{{color:#32d74b;font-family:Arial,monospace;font-size:11px}}
 
 /* Footer */
-.footer{{display:flex;justify-content:space-between;align-items:center;padding:4px 14px}}
+.footer{{display:flex;justify-content:space-between;align-items:center;padding:10px 14px}}
 button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;font-size:15px;font-weight:500;padding:3px 8px;border-radius:7px;transition:background .12s}}
 .btn-r{{color:#4a9eff}}.btn-r:hover{{background:rgba(74,158,255,.15)}}
 .btn-s{{color:#ff9f0a}}.btn-s:hover{{background:rgba(255,159,10,.15)}}
@@ -318,13 +318,13 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
     </div>
   </div>
 
-  <div>
+  <div style="margin-top:6px">
     <div class="row">
       <span class="label">Weekly Usage</span>
-      <span class="nums" id="weekNums">{d['week_pct']}%</span>
+      <span class="nums" id="weekNums">7일 누적사용량</span>
     </div>
-    <div class="track"><div class="fill" id="weekFill" style="width:{d['week_pct']}%;background:#4a9eff"></div></div>
-    <div style="font-size:12px;color:rgba(255,255,255,.45);margin-top:4px">7일 누적 사용량</div>
+    <div class="track" style="margin-top:7px"><div class="fill" id="weekFill" style="width:{d['week_pct']}%;background:#4a9eff"></div></div>
+    <div style="font-size:22px;font-weight:700;color:#4a9eff;margin-top:6px" id="weekPct">{int(d['week_pct'])}%</div>
   </div>
 
 </div>
@@ -346,7 +346,7 @@ function updateData(d){{
   document.getElementById('nums').textContent=d.total+' / '+d.limit;
   document.getElementById('bigTime').textContent=d.time;
   document.getElementById('weekFill').style.width=d.week_pct+'%';
-  document.getElementById('weekNums').textContent=d.week_pct+'%';
+  document.getElementById('weekPct').textContent=Math.round(d.week_pct)+'%';
   document.getElementById('badge').textContent=d.synced?'claude.ai':'Local';
   document.getElementById('btnR').disabled=false;
   document.getElementById('btnR').innerHTML='Refresh';
