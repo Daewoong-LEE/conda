@@ -325,7 +325,6 @@ button{{background:none;border:none;cursor:pointer;font-family:Arial,sans-serif;
     </div>
     <div class="track" style="margin-top:7px"><div class="fill" id="weekFill" style="width:{d['week_pct']}%;background:#4a9eff"></div></div>
     <div style="font-size:22px;font-weight:700;color:#4a9eff;margin-top:6px" id="weekPct">{int(d['week_pct'])}%</div>
-    <div style="font-size:11px;color:rgba(255,255,255,.4);margin-top:2px">7일 누적사용량</div>
   </div>
 
 </div>
