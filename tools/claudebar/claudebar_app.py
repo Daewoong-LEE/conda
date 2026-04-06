@@ -114,7 +114,7 @@ def _get_live():
     try:
         now_ts = datetime.now().timestamp()
         cached = json.loads(_LIVE_CACHE.read_text()) if _LIVE_CACHE.exists() else {}
-        if now_ts - cached.get("ts", 0) > 60:
+        if now_ts - cached.get("ts", 0) > 30:
             result = _fetch_claude_usage()
             cached = {"ts": now_ts, **(result or {}), "synced": result is not None}
             _LIVE_CACHE.write_text(json.dumps(cached))
@@ -417,6 +417,7 @@ class AppDelegate(NSObject):
             self.popover.showRelativeToRect_ofView_preferredEdge_(
                 btn.bounds(), btn, AppKit.NSRectEdgeMinY)
             AppKit.NSApp.activateIgnoringOtherApps_(True)
+            threading.Thread(target=self._refresh, daemon=True).start()
 
     def userContentController_didReceiveScriptMessage_(self, _, msg):
         if msg.body() == "refresh":
