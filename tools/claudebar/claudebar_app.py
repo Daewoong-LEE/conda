@@ -58,6 +58,7 @@ def _fmt_exact(n):  # 51,881
 # ── claude.ai usage sync ─────────────────────────────────────────────────────
 _LIVE_CACHE   = Path.home() / ".claudebar_live.json"
 _SESSION_FILE = Path.home() / ".claudebar_session"
+_week_limit   = None  # derived from API week_pct + local 7d tokens
 
 def _fetch_claude_usage():
     """Fetch real usage from claude.ai using sessionKey file. Returns dict or None."""
@@ -172,6 +173,7 @@ def _aggregate(entries, cutoff):
                 by_model=by_model, first_ts=first_ts)
 
 def read_stats():
+    global _week_limit
     now     = datetime.now(timezone.utc)
     entries = _all_entries()
 
@@ -192,12 +194,26 @@ def read_stats():
     limit = 150_000
     total = d["inp"] + d["out"]
 
+    # 7일치 로컬 집계
+    d7 = _aggregate(entries, now - timedelta(days=7))
+    total_7d = d7["inp"] + d7["out"]
+
     # Claude 앱 실시간 동기화
     live = _get_live()
     synced   = live.get("synced", False)
     pct      = live["pct"]        if synced else round(total / limit * 100, 1)
     mins     = live["reset_mins"] if (synced and live.get("reset_mins") is not None) else local_mins
-    week_pct = live.get("week_pct", 0.0) if synced else 0.0
+
+    # week_pct: API로 week_limit 보정 → 이후 로컬 파일로 실시간 계산
+    api_week_pct = live.get("week_pct", 0.0) if synced else None
+    if api_week_pct and api_week_pct > 0 and total_7d > 0:
+        _week_limit = round(total_7d / (api_week_pct / 100))
+    if _week_limit and _week_limit > 0:
+        week_pct = round(min(total_7d / _week_limit * 100, 100), 1)
+    elif api_week_pct is not None:
+        week_pct = api_week_pct
+    else:
+        week_pct = 0.0
 
     # 토큰 수: 동기화 시 API % 역산, 아니면 로컬 집계
     display_total = _fmt_exact(round(limit * pct / 100)) if synced else _fmt_exact(total)
