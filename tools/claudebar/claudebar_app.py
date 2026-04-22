@@ -429,11 +429,12 @@ class AppDelegate(NSObject):
         if self.popover.isShown():
             self.popover.performClose_(sender)
         else:
+            d = read_stats()
+            self.webView.loadHTMLString_baseURL_(_build_html(d), None)
             btn = self.statusItem.button()
             self.popover.showRelativeToRect_ofView_preferredEdge_(
                 btn.bounds(), btn, AppKit.NSRectEdgeMinY)
             AppKit.NSApp.activateIgnoringOtherApps_(True)
-            threading.Thread(target=self._refresh, daemon=True).start()
 
     def userContentController_didReceiveScriptMessage_(self, _, msg):
         if msg.body() == "refresh":
@@ -493,12 +494,6 @@ class AppDelegate(NSObject):
                     AppKit.NSForegroundColorAttributeName, col,
                     AppKit.NSMakeRange(idx, len(pct_s)))
             self.statusItem.button().setAttributedTitle_(astr)
-
-            js = (f"updateData({{"
-                  f"pct:{pct},total:'{d['total_exact']}',limit:'{d['limit_exact']}',"
-                  f"week_pct:{d['week_pct']},"
-                  f"time:'{d['time']}',mins:{mins},synced:true}});")
-            self.webView.evaluateJavaScript_completionHandler_(js, None)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_update)
 
