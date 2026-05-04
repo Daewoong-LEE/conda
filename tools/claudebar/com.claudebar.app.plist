@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent — auto-start ClaudeBar at login.
+
+  Install:
+    cp com.claudebar.app.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.claudebar.app.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.claudebar.app.plist
+    rm ~/Library/LaunchAgents/com.claudebar.app.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.claudebar.app</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Adjust the path to your Python / venv that has claudebar installed -->
+    <string>/usr/local/bin/claudebar</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/claudebar.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/claudebar.err</string>
+</dict>
+</plist>
